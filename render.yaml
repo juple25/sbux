@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: starbucks-survey-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: 8481395468:AAEFat0skeQc9Z1ntaIECMQhpb-6T0-Lzdk
+      - key: WEBHOOK_URL
+        generateValue: true
+      - key: PORT
+        generateValue: true
+    autoDeploy: true
+    plan: free
