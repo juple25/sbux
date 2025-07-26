@@ -1,347 +1,423 @@
-import logging
 import os
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler
+import aiohttp
+from bs4 import BeautifulSoup
+import asyncio
+from urllib.parse import unquote, quote
 import re
-import requests # Ditambahkan untuk permintaan HTTP
-from bs4 import BeautifulSoup # Ditambahkan untuk parsing HTML
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
-# Mengaktifkan logging untuk melihat aktivitas bot
+# Setup logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
-# Mengatur level logging yang lebih tinggi untuk httpx agar tidak terlalu banyak log request
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
 logger = logging.getLogger(__name__)
 
-# Mendefinisikan status (states) untuk ConversationHandler
-ENTER_CUSTOMER_CODE, AUTOMATE_SURVEY_STEPS, ENTER_MESSAGE, DISPLAY_PROMO = range(4) # Status disederhanakan
+# States untuk conversation
+WAITING_CODE, WAITING_MESSAGE = range(2)
 
-# --- Konfigurasi ---
-# Mendapatkan token bot dari variabel lingkungan untuk keamanan.
-# PASTIKAN Anda mengatur variabel lingkungan TELEGRAM_BOT_TOKEN di Render!
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not TELEGRAM_BOT_TOKEN:
-    logger.error("Variabel lingkungan TELEGRAM_BOT_TOKEN tidak diatur. Bot tidak dapat dimulai.")
-    exit(1) # Keluar jika token tidak diatur
+# Data storage untuk session
+user_sessions = {}
 
-# URL survei Starbucks
-STARBUCKS_SURVEY_URL = "https://www.mystarbucksvisit.com/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2=7e892124-f2b8-4823-8088-a5f0eb4afc44#!/1"
+class StarbucksSurveyBot:
+    def __init__(self):
+        self.base_url = "https://www.mystarbucksvisit.com"
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'id-ID,id;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
 
-# --- Handler Perintah ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Mengirim pesan selamat datang dan memulai proses survei."""
-    await update.message.reply_text(
-        "Halo! Saya bot untuk membantu Anda mengisi survei Starbucks.\n"
-        "Silakan mulai dengan mengunjungi tautan survei ini di browser Anda untuk memastikan berfungsi:\n"
-        f"{STARBUCKS_SURVEY_URL}\n\n"
-        "Setelah itu, silakan masukkan kode pelanggan Anda (biasanya 16 digit, ditemukan di struk):\n"
-        "Contoh: `1234567890123456`"
-    )
-    # Mengarahkan percakapan ke status ENTER_CUSTOMER_CODE
-    return ENTER_CUSTOMER_CODE
+    async def create_session(self):
+        """Create aiohttp session with headers"""
+        return aiohttp.ClientSession(headers=self.headers)
 
-# --- Fungsi Otomatisasi Web (Eksperimental) ---
-async def automate_survey_steps(session: requests.Session, url: str, customer_code: str, user_message: str = None) -> str:
-    """
-    Mencoba mengotomatiskan langkah-langkah survei Starbucks.
-    Ini adalah fungsi eksperimental dan mungkin tidak berfungsi jika situs web memiliki anti-bot.
-    """
-    try:
-        # Langkah 1: Akses halaman awal dan pilih Bahasa Indonesia
-        logger.info(f"Mengakses URL survei: {url}")
-        response = session.get(url)
-        soup = BeautifulSoup(response.text, 'html.parser')
+    async def get_initial_page(self, session):
+        """Get initial survey page"""
+        try:
+            url = f"{self.base_url}/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2=7e892124-f2b8-4823-8088-a5f0eb4afc44#!/1"
+            async with session.get(url) as response:
+                if response.status == 200:
+                    return await response.text()
+                else:
+                    logger.error(f"Failed to get initial page: {response.status}")
+                    return None
+        except Exception as e:
+            logger.error(f"Error getting initial page: {e}")
+            return None
 
-        # Cari tombol "Bahasa Indonesia" dan klik (simulasi)
-        # Asumsi: Ada link atau form yang mengarahkan ke bahasa Indonesia
-        # Ini adalah bagian yang paling mungkin perlu disesuaikan.
-        # Contoh sederhana: mencari link dengan teks "Bahasa Indonesia"
-        # Atau form dengan input tersembunyi untuk bahasa.
-        # Untuk survei ini, URL sudah mengarahkan ke survei, jadi pemilihan bahasa mungkin terjadi di awal.
-        # Jika ada tombol eksplisit:
-        # indo_button = soup.find('button', string='BAHASA INDONESIA')
-        # if indo_button and indo_button.form:
-        #     form_data = {input.get('name'): input.get('value') for input in indo_button.form.find_all('input')}
-        #     response = session.post(indo_button.form.get('action'), data=form_data)
-        #     soup = BeautifulSoup(response.text, 'html.parser')
-        # else:
-        #     logger.warning("Tombol 'Bahasa Indonesia' tidak ditemukan atau tidak memiliki form. Melanjutkan.")
-
-        # Langkah 2: Masukkan kode pelanggan
-        # Cari form yang berisi input kode pelanggan
-        # Asumsi: input memiliki name 'CustomerCode' atau 'kodePelanggan'
-        form = soup.find('form') # Cari form pertama atau yang relevan
-        if not form:
-            raise ValueError("Form survei tidak ditemukan di halaman awal.")
-
-        # Ekstrak semua input tersembunyi (hidden inputs) dari form
-        form_data = {}
-        for input_tag in form.find_all('input', type='hidden'):
-            if input_tag.get('name'):
-                form_data[input_tag.get('name')] = input_tag.get('value')
-
-        # Tambahkan kode pelanggan
-        # Asumsi nama input untuk kode pelanggan adalah 'CustomerCode' atau 'kodePelanggan'
-        # Anda mungkin perlu menyesuaikan ini berdasarkan inspeksi HTML survei
-        form_data['CustomerCode'] = customer_code # Coba nama ini
-        # form_data['kodePelanggan'] = customer_code # Atau nama ini
-
-        # Cari action URL untuk form
-        form_action = form.get('action') or response.url # Gunakan URL saat ini jika action tidak ada
-        if not form_action.startswith('http'): # Handle relative paths
-            form_action = response.url.split('?')[0].rsplit('/', 1)[0] + '/' + form_action
-
-        logger.info(f"Mengirim kode pelanggan ke: {form_action} dengan data: {form_data}")
-        response = session.post(form_action, data=form_data)
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Langkah 3: Pilih "Membeli dan langsung pergi" & "Ya"
-        # Asumsi: Radio button untuk jenis kunjungan memiliki name 'VisitType' atau 'Q1'
-        # Asumsi: Radio button untuk makanan memiliki name 'FoodOrdered' atau 'Q2'
-        # Asumsi: Value untuk "Membeli dan langsung pergi" adalah 'TakeAway' atau '1'
-        # Asumsi: Value untuk "Ya" adalah 'Yes' atau '1'
-        
-        # Cari form berikutnya
-        form = soup.find('form')
-        if not form:
-            raise ValueError("Form jenis kunjungan tidak ditemukan.")
-
-        form_data = {}
-        for input_tag in form.find_all('input', type='hidden'):
-            if input_tag.get('name'):
-                form_data[input_tag.get('name')] = input_tag.get('value')
-
-        # Coba mengisi pilihan
-        form_data['VisitType'] = 'TakeAway' # Asumsi nama input dan value
-        form_data['FoodOrdered'] = 'Yes' # Asumsi nama input dan value
-        # Anda mungkin perlu menyesuaikan ini:
-        # form_data['Q1'] = '1' # Contoh lain
-        # form_data['Q2'] = '1' # Contoh lain
-
-        form_action = form.get('action') or response.url
-        if not form_action.startswith('http'):
-            form_action = response.url.split('?')[0].rsplit('/', 1)[0] + '/' + form_action
-
-        logger.info(f"Mengirim pilihan kunjungan/makanan ke: {form_action}")
-        response = session.post(form_action, data=form_data)
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Langkah 4: Pilih "Hari ini atau besok"
-        # Asumsi: Radio button untuk waktu kembali memiliki name 'ReturnTime' atau 'Q3'
-        # Asumsi: Value untuk "Hari ini atau besok" adalah 'TodayTomorrow' atau '1'
-
-        form = soup.find('form')
-        if not form:
-            raise ValueError("Form waktu kembali tidak ditemukan.")
-
-        form_data = {}
-        for input_tag in form.find_all('input', type='hidden'):
-            if input_tag.get('name'):
-                form_data[input_tag.get('name')] = input_tag.get('value')
-        
-        form_data['ReturnTime'] = 'TodayTomorrow' # Asumsi nama input dan value
-        # form_data['Q3'] = '1' # Contoh lain
-
-        form_action = form.get('action') or response.url
-        if not form_action.startswith('http'):
-            form_action = response.url.split('?')[0].rsplit('/', 1)[0] + '/' + form_action
-
-        logger.info(f"Mengirim pilihan waktu kembali ke: {form_action}")
-        response = session.post(form_action, data=form_data)
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Langkah 5: Pilih angka 7 (Sangat setuju) untuk semua pertanyaan
-        # Ini adalah bagian yang paling tricky dan sangat bergantung pada struktur HTML.
-        # Asumsi: Semua pertanyaan penilaian adalah radio button group atau select dropdown
-        # dengan nama yang mengikuti pola (misal 'Q4', 'Q5', dst) atau memiliki class tertentu.
-        # Asumsi: Value untuk 'Sangat setuju' adalah '7'.
-
-        form = soup.find('form')
-        if not form:
-            raise ValueError("Form pertanyaan penilaian tidak ditemukan.")
-
-        form_data = {}
-        for input_tag in form.find_all('input', type='hidden'):
-            if input_tag.get('name'):
-                form_data[input_tag.get('name')] = input_tag.get('value')
-
-        # Cari semua input radio button atau select yang mungkin merupakan pertanyaan penilaian
-        # Ini adalah tebakan terbaik tanpa melihat HTML langsung
-        for input_tag in form.find_all('input', type='radio'):
-            if 'Q' in input_tag.get('name', '') and input_tag.get('value') == '7':
-                form_data[input_tag.get('name')] = '7'
-        
-        for select_tag in form.find_all('select'):
-            if 'Q' in select_tag.get('name', ''):
-                # Cari option dengan value '7'
-                option_7 = select_tag.find('option', value='7')
-                if option_7:
-                    form_data[select_tag.get('name')] = '7'
-
-        form_action = form.get('action') or response.url
-        if not form_action.startswith('http'):
-            form_action = response.url.split('?')[0].rsplit('/', 1)[0] + '/' + form_action
-
-        logger.info(f"Mengisi semua pertanyaan dengan '7' ke: {form_action}")
-        response = session.post(form_action, data=form_data)
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Langkah 6: Isi pesan (jika ada)
-        # Asumsi: Input textarea untuk pesan memiliki name 'Comments' atau 'Message'
-        form = soup.find('form')
-        if form: # Form pesan mungkin opsional
-            form_data = {}
-            for input_tag in form.find_all('input', type='hidden'):
-                if input_tag.get('name'):
-                    form_data[input_tag.get('name')] = input_tag.get('value')
+    async def submit_language(self, session, page_content):
+        """Submit Indonesian language selection"""
+        try:
+            # Parse form data from page
+            soup = BeautifulSoup(page_content, 'html.parser')
+            form = soup.find('form')
+            if not form:
+                return None
             
-            # Coba mengisi pesan jika input field ada
-            if form.find('textarea', {'name': 'Comments'}):
-                form_data['Comments'] = user_message if user_message else ''
-            elif form.find('textarea', {'name': 'Message'}):
-                form_data['Message'] = user_message if user_message else ''
-            # Anda mungkin perlu menyesuaikan ini
+            # Extract form action and data
+            action = form.get('action', '')
+            form_data = {
+                'language': 'id',  # Indonesian
+                '_submit': 'Continue'
+            }
+            
+            # Add hidden fields
+            for hidden in form.find_all('input', type='hidden'):
+                form_data[hidden.get('name', '')] = hidden.get('value', '')
+            
+            # Submit form
+            async with session.post(f"{self.base_url}{action}", data=form_data) as response:
+                if response.status == 200:
+                    return await response.text()
+                else:
+                    logger.error(f"Failed to submit language: {response.status}")
+                    return None
+        except Exception as e:
+            logger.error(f"Error submitting language: {e}")
+            return None
 
-            form_action = form.get('action') or response.url
-            if not form_action.startswith('http'):
-                form_action = response.url.split('?')[0].rsplit('/', 1)[0] + '/' + form_action
+    async def submit_customer_code(self, session, page_content, customer_code):
+        """Submit customer code"""
+        try:
+            soup = BeautifulSoup(page_content, 'html.parser')
+            form = soup.find('form')
+            if not form:
+                return None
+            
+            action = form.get('action', '')
+            form_data = {
+                'customerCode': customer_code,
+                '_submit': 'Berikutnya'
+            }
+            
+            # Add hidden fields
+            for hidden in form.find_all('input', type='hidden'):
+                form_data[hidden.get('name', '')] = hidden.get('value', '')
+            
+            async with session.post(f"{self.base_url}{action}", data=form_data) as response:
+                if response.status == 200:
+                    return await response.text()
+                else:
+                    logger.error(f"Failed to submit customer code: {response.status}")
+                    return None
+        except Exception as e:
+            logger.error(f"Error submitting customer code: {e}")
+            return None
 
-            logger.info(f"Mengirim pesan ke: {form_action}")
-            response = session.post(form_action, data=form_data)
-            soup = BeautifulSoup(response.text, 'html.parser')
-        else:
-            logger.info("Form pesan tidak ditemukan atau sudah dilewati.")
+    async def submit_survey_answers(self, session, page_content):
+        """Submit all survey answers with 7 (Sangat Setuju)"""
+        try:
+            current_page = page_content
+            
+            while True:
+                soup = BeautifulSoup(current_page, 'html.parser')
+                form = soup.find('form')
+                if not form:
+                    break
+                
+                action = form.get('action', '')
+                form_data = {}
+                
+                # Add hidden fields
+                for hidden in form.find_all('input', type='hidden'):
+                    form_data[hidden.get('name', '')] = hidden.get('value', '')
+                
+                # Find all radio buttons and select highest value (7)
+                radio_groups = {}
+                for radio in form.find_all('input', type='radio'):
+                    name = radio.get('name', '')
+                    value = radio.get('value', '')
+                    if name and value:
+                        if name not in radio_groups or int(value) > int(radio_groups[name]):
+                            radio_groups[name] = value
+                
+                # Add radio selections
+                form_data.update(radio_groups)
+                
+                # Check for dropdowns and select appropriate values
+                for select in form.find_all('select'):
+                    name = select.get('name', '')
+                    if 'visit_type' in name:
+                        form_data[name] = 'direct'  # Membeli langsung pergi
+                    elif 'return' in name:
+                        form_data[name] = 'yes'  # Ya
+                    elif 'day' in name:
+                        form_data[name] = 'today'  # Hari ini
+                
+                form_data['_submit'] = 'Berikutnya'
+                
+                # Submit form
+                async with session.post(f"{self.base_url}{action}", data=form_data) as response:
+                    if response.status == 200:
+                        current_page = await response.text()
+                        
+                        # Check if we've reached the message page
+                        if 'textarea' in current_page or 'message' in current_page.lower():
+                            return current_page
+                    else:
+                        logger.error(f"Failed to submit survey answer: {response.status}")
+                        return None
+                
+                # Add delay to avoid rate limiting
+                await asyncio.sleep(1)
+                
+        except Exception as e:
+            logger.error(f"Error submitting survey answers: {e}")
+            return None
 
-        # Langkah 7: Dapatkan ID Special Promo
-        # Asumsi: ID promo ada di halaman terakhir, mungkin dalam tag <p>, <div>, atau <span>
-        # dengan teks "ID Special Promo: XXXXX"
-        # Ini adalah bagian yang paling bervariasi. Perlu inspeksi HTML yang akurat.
-        promo_id = "Tidak ditemukan"
-        # Mencari teks yang mengandung "ID Special Promo:"
-        promo_text_elements = soup.find_all(text=re.compile(r"ID Special Promo:\s*(\d+)"))
-        if promo_text_elements:
-            match = re.search(r"ID Special Promo:\s*(\d+)", promo_text_elements[0])
-            if match:
-                promo_id = match.group(1)
-                logger.info(f"ID Promo ditemukan: {promo_id}")
-            else:
-                logger.warning("Regex untuk ID Promo tidak cocok.")
-        else:
-            logger.warning("Teks 'ID Special Promo:' tidak ditemukan di halaman akhir.")
+    async def submit_message(self, session, page_content, message):
+        """Submit final message"""
+        try:
+            soup = BeautifulSoup(page_content, 'html.parser')
+            form = soup.find('form')
+            if not form:
+                return None
+            
+            action = form.get('action', '')
+            form_data = {
+                'message': message,
+                '_submit': 'Kirim'
+            }
+            
+            # Add hidden fields
+            for hidden in form.find_all('input', type='hidden'):
+                form_data[hidden.get('name', '')] = hidden.get('value', '')
+            
+            async with session.post(f"{self.base_url}{action}", data=form_data) as response:
+                if response.status == 200:
+                    return await response.text()
+                else:
+                    logger.error(f"Failed to submit message: {response.status}")
+                    return None
+        except Exception as e:
+            logger.error(f"Error submitting message: {e}")
+            return None
 
-        return promo_id
+    async def extract_promo_code(self, page_content):
+        """Extract promo code from final page"""
+        try:
+            soup = BeautifulSoup(page_content, 'html.parser')
+            
+            # Look for promo code in various possible locations
+            promo_patterns = [
+                r'[A-Z0-9]{6,12}',  # Common promo code format
+                r'ID.*?([A-Z0-9]{6,})',  # ID followed by code
+                r'kode.*?([A-Z0-9]{6,})',  # kode followed by code
+                r'promo.*?([A-Z0-9]{6,})'  # promo followed by code
+            ]
+            
+            text = soup.get_text()
+            for pattern in promo_patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    return match.group(1) if match.groups() else match.group(0)
+            
+            # Look in specific elements
+            for elem in soup.find_all(['div', 'span', 'p', 'h1', 'h2', 'h3', 'h4']):
+                if 'promo' in elem.get_text().lower() or 'kode' in elem.get_text().lower():
+                    # Extract alphanumeric codes
+                    codes = re.findall(r'[A-Z0-9]{6,12}', elem.get_text())
+                    if codes:
+                        return codes[0]
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error extracting promo code: {e}")
+            return None
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Kesalahan koneksi saat mengotomatisasi survei: {e}")
-        return f"Error: Kesalahan koneksi. ({e})"
-    except ValueError as e:
-        logger.error(f"Kesalahan parsing HTML saat mengotomatisasi survei: {e}")
-        return f"Error: Kesalahan parsing halaman survei. ({e})"
-    except Exception as e:
-        logger.error(f"Kesalahan tak terduga saat mengotomatisasi survei: {e}")
-        return f"Error: Terjadi kesalahan tak terduga. ({e})"
+    async def run_survey(self, customer_code, message):
+        """Run complete survey automation"""
+        async with await self.create_session() as session:
+            try:
+                # Step 1: Get initial page
+                logger.info("Getting initial page...")
+                page = await self.get_initial_page(session)
+                if not page:
+                    return None, "Gagal mengakses halaman survey"
+                
+                # Step 2: Select Indonesian language
+                logger.info("Selecting Indonesian language...")
+                page = await self.submit_language(session, page)
+                if not page:
+                    return None, "Gagal memilih bahasa"
+                
+                # Step 3: Submit customer code
+                logger.info(f"Submitting customer code: {customer_code}")
+                page = await self.submit_customer_code(session, page, customer_code)
+                if not page:
+                    return None, "Gagal memasukkan kode pelanggan. Pastikan kode valid."
+                
+                # Step 4: Submit all survey answers
+                logger.info("Submitting survey answers...")
+                page = await self.submit_survey_answers(session, page)
+                if not page:
+                    return None, "Gagal mengisi survey"
+                
+                # Step 5: Submit message
+                logger.info("Submitting message...")
+                page = await self.submit_message(session, page, message)
+                if not page:
+                    return None, "Gagal mengirim pesan"
+                
+                # Step 6: Extract promo code
+                logger.info("Extracting promo code...")
+                promo_code = await self.extract_promo_code(page)
+                if promo_code:
+                    return promo_code, None
+                else:
+                    return None, "Tidak dapat menemukan kode promo"
+                    
+            except Exception as e:
+                logger.error(f"Error in survey automation: {e}")
+                return None, f"Error: {str(e)}"
 
+# Bot handlers
+bot = StarbucksSurveyBot()
 
-# --- Handler Status Percakapan ---
-async def enter_customer_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Menerima kode pelanggan dari pengguna dan memulai otomatisasi."""
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start command handler"""
+    user_id = update.effective_user.id
+    user_sessions[user_id] = {}
+    
+    await update.message.reply_text(
+        "🌟 *Selamat datang di Starbucks Survey Bot!*\n\n"
+        "Bot ini akan membantu Anda mengisi survey Starbucks secara otomatis.\n\n"
+        "📝 *Cara penggunaan:*\n"
+        "1. Kirimkan kode pelanggan Anda\n"
+        "2. Kirimkan pesan untuk survey\n"
+        "3. Bot akan mengisi survey otomatis\n"
+        "4. Dapatkan kode promo Anda!\n\n"
+        "Silakan kirimkan *kode pelanggan* Anda:",
+        parse_mode='Markdown'
+    )
+    
+    return WAITING_CODE
+
+async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive customer code"""
+    user_id = update.effective_user.id
     customer_code = update.message.text.strip()
-    if not re.match(r"^\d{16}$", customer_code): # Asumsi 16 digit
+    
+    # Validate customer code format (adjust as needed)
+    if not customer_code or len(customer_code) < 5:
         await update.message.reply_text(
-            "Kode pelanggan tidak valid. Mohon masukkan 16 digit angka saja.\n"
-            "Contoh: `1234567890123456`"
+            "❌ Kode pelanggan tidak valid. Silakan kirim kode yang benar:"
         )
-        return ENTER_CUSTOMER_CODE
-
-    context.user_data['customer_code'] = customer_code
+        return WAITING_CODE
+    
+    user_sessions[user_id]['customer_code'] = customer_code
+    
     await update.message.reply_text(
-        f"Kode pelanggan Anda: `{customer_code}`. "
-        f"Sekarang saya akan mencoba mengisi survei secara otomatis untuk Anda.\n"
-        f"Mohon tunggu sebentar..."
+        f"✅ Kode pelanggan: `{customer_code}`\n\n"
+        "Sekarang kirimkan *pesan* yang ingin Anda sampaikan dalam survey:",
+        parse_mode='Markdown'
     )
     
-    # Langsung pindah ke status AUTOMATE_SURVEY_STEPS untuk memicu otomatisasi
-    await update.message.reply_text(
-        "Apakah Anda ingin menambahkan pesan kustom untuk survei? "
-        "Ketik pesan Anda (maks 500 karakter) atau ketik `lanjut` jika tidak ada pesan."
-    )
-    return ENTER_MESSAGE # Pindah ke ENTER_MESSAGE setelah kode pelanggan diterima
+    return WAITING_MESSAGE
 
-async def enter_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Menerima pesan kustom dari pengguna atau melanjutkan jika tidak ada pesan, lalu memicu otomatisasi."""
-    user_input = update.message.text.strip()
-
-    if user_input.lower() == 'lanjut':
-        context.user_data['user_message'] = None
-    else:
-        user_message = user_input
-        if len(user_message) > 500:
-            await update.message.reply_text(
-                "Pesan terlalu panjang. Maksimal 500 karakter. Mohon coba lagi "
-                "atau ketik `lanjut` jika tidak ada pesan."
-            )
-            return ENTER_MESSAGE
-
-        context.user_data['user_message'] = user_message
-        await update.message.reply_text(f"Pesan Anda: \"{user_message}\"")
-
-    await update.message.reply_text("Memulai otomatisasi survei...")
+async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive survey message and process"""
+    user_id = update.effective_user.id
+    message = update.message.text.strip()
     
-    # Panggil fungsi otomatisasi
-    promo_id = await automate_survey_steps(
-        requests.Session(), # Gunakan session untuk mempertahankan cookies
-        STARBUCKS_SURVEY_URL,
-        context.user_data['customer_code'],
-        context.user_data.get('user_message')
-    )
-
-    if promo_id.startswith("Error:"):
+    if not message:
         await update.message.reply_text(
-            f"Maaf, terjadi kesalahan saat mengotomatisasi survei: {promo_id}\n"
-            "Mungkin ada perubahan pada situs web atau mekanisme anti-bot.\n"
-            "Silakan coba lagi nanti atau isi survei secara manual."
+            "❌ Pesan tidak boleh kosong. Silakan kirim pesan Anda:"
         )
-        return ConversationHandler.END
+        return WAITING_MESSAGE
+    
+    customer_code = user_sessions[user_id].get('customer_code')
+    
+    # Send processing message
+    processing_msg = await update.message.reply_text(
+        "⏳ *Sedang memproses survey...*\n\n"
+        "Langkah:\n"
+        "☐ Mengakses halaman survey\n"
+        "☐ Memilih bahasa Indonesia\n"
+        "☐ Memasukkan kode pelanggan\n"
+        "☐ Mengisi survey (semua jawaban: Sangat Setuju)\n"
+        "☐ Mengirim pesan\n"
+        "☐ Mendapatkan kode promo\n\n"
+        "Mohon tunggu...",
+        parse_mode='Markdown'
+    )
+    
+    # Run survey automation
+    promo_code, error = await bot.run_survey(customer_code, message)
+    
+    # Delete processing message
+    await processing_msg.delete()
+    
+    if promo_code:
+        await update.message.reply_text(
+            f"🎉 *Survey berhasil diselesaikan!*\n\n"
+            f"🎁 *Kode Promo Anda:* `{promo_code}`\n\n"
+            f"📱 Tunjukkan kode ini di Starbucks untuk mendapatkan promo!\n\n"
+            f"Gunakan /start untuk mengisi survey lagi.",
+            parse_mode='Markdown'
+        )
     else:
         await update.message.reply_text(
-            f"Otomatisasi selesai! ID Special Promo Anda adalah: **`{promo_id}`**\n\n"
-            "Anda dapat menuliskan ID ini di struk Anda dan menunjukkannya kepada barista Starbucks "
-            "untuk menukarkan promo **Buy 1 Get 1 Free**. Promo ini berlaku selama 7 hari.\n\n"
-            "Selamat menikmati! 😊"
+            f"❌ *Gagal menyelesaikan survey*\n\n"
+            f"Error: {error}\n\n"
+            f"Silakan coba lagi dengan /start",
+            parse_mode='Markdown'
         )
-        await update.message.reply_text("Terima kasih telah menggunakan bot ini!")
-        return ConversationHandler.END
+    
+    # Clear session
+    user_sessions.pop(user_id, None)
+    return ConversationHandler.END
 
-# --- Handler Fallback ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Membatalkan dan mengakhiri percakapan."""
+    """Cancel current operation"""
+    user_id = update.effective_user.id
+    user_sessions.pop(user_id, None)
+    
     await update.message.reply_text(
-        "Proses survei dibatalkan. Jika Anda ingin mulai lagi, ketik /start."
+        "❌ Operasi dibatalkan. Gunakan /start untuk memulai lagi."
     )
     return ConversationHandler.END
 
-# --- Fungsi Utama ---
-def main() -> None:
-    """Memulai bot."""
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
+def main():
+    """Main function to run the bot"""
+    # Get token from environment variable or use provided token
+    TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8481395468:AAEFat0skeQc9Z1ntaIECMQhpb-6T0-Lzdk')
+    
+    # Create application
+    application = Application.builder().token(TOKEN).build()
+    
+    # Add conversation handler
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[CommandHandler('start', start)],
         states={
-            ENTER_CUSTOMER_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_customer_code)],
-            ENTER_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_message)],
-            # DISPLAY_PROMO tidak lagi menjadi status terpisah karena promo langsung ditampilkan setelah otomatisasi
+            WAITING_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code)],
+            WAITING_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler('cancel', cancel)]
     )
-
+    
     application.add_handler(conv_handler)
+    
+    # Start bot
+    if os.environ.get('WEBHOOK_URL'):
+        # For deployment with webhook
+        port = int(os.environ.get('PORT', 5000))
+        webhook_url = os.environ.get('WEBHOOK_URL')
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=TOKEN,
+            webhook_url=f"{webhook_url}/{TOKEN}"
+        )
+    else:
+        # For local development
+        application.run_polling()
 
-    logger.info("Bot sedang memulai polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
-
