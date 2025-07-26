@@ -10,6 +10,6 @@ services:
       - key: WEBHOOK_URL
         generateValue: true
       - key: PORT
-        generateValue: true
+        value: 10000
     autoDeploy: true
     plan: free
