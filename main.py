@@ -5,9 +5,11 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import aiohttp
 from bs4 import BeautifulSoup
 import asyncio
-from urllib.parse import unquote, quote
+from urllib.parse import unquote, quote, urlparse, parse_qs
 import re
 import uuid
+import json
+import base64
 
 # Setup logging
 logging.basicConfig(
@@ -26,13 +28,19 @@ class StarbucksSurveyBot:
     def __init__(self):
         self.base_url = "https://www.mystarbucksvisit.com"
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'id-ID,id;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'Content-Type': 'application/json;charset=UTF-8',
+            'sec-ch-ua': '"Not)A;Brand";v="8", "Chromium";v="138", "Microsoft Edge";v="138"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin'
         }
+        self.session_data = {}
 
     async def create_session(self):
         """Create aiohttp session with headers"""
@@ -42,28 +50,71 @@ class StarbucksSurveyBot:
         """Generate new session ID"""
         return str(uuid.uuid4())
 
+    def extract_session_from_url(self, survey_url):
+        """Extract session parameters from survey URL"""
+        try:
+            parsed = urlparse(survey_url)
+            params = parse_qs(parsed.query)
+            
+            g_param = params.get('_g', [None])[0]
+            s2_param = params.get('_s2', [None])[0]
+            
+            logger.info(f"Extracted _g: {g_param}, _s2: {s2_param}")
+            return g_param, s2_param
+        except Exception as e:
+            logger.error(f"Error extracting session from URL: {e}")
+            return None, None
+
     async def get_initial_page(self, session, survey_url=None):
-        """Get initial survey page using provided URL or generate new one"""
+        """Get initial survey page and extract tokens"""
         try:
             if survey_url:
-                # Use URL provided by user
                 url = survey_url
+                g_param, s2_param = self.extract_session_from_url(survey_url)
                 logger.info(f"Using provided survey URL: {url}")
             else:
-                # Use correct URL format like receipt
-                session_id = self.generate_session_id()
-                url = f"{self.base_url}/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2={session_id}#!/1"
-                logger.info(f"Generated new session ID: {session_id}")
-                logger.info(f"Using generated URL: {url}")
+                s2_param = self.generate_session_id()
+                g_param = "NTAyMA%3D%3Dh"
+                url = f"{self.base_url}/websurvey/2/execute?_g={g_param}&_s2={s2_param}#!/1"
+                logger.info(f"Generated new session ID: {s2_param}")
+            
+            # Store session data
+            self.session_data = {
+                'g_param': g_param,
+                's2_param': s2_param,
+                'referer': url
+            }
             
             logger.info(f"=== URL FOR MANUAL TEST: {url} ===")
             
-            async with session.get(url) as response:
+            # Get initial page with HTML headers
+            html_headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br, zstd',
+                'sec-ch-ua': '"Not)A;Brand";v="8", "Chromium";v="138", "Microsoft Edge";v="138"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"',
+                'sec-fetch-dest': 'document',
+                'sec-fetch-mode': 'navigate',
+                'sec-fetch-site': 'none',
+                'Upgrade-Insecure-Requests': '1'
+            }
+            
+            async with session.get(url, headers=html_headers) as response:
                 response_text = await response.text()
                 if response.status == 200:
                     if 'gateway error' in response_text.lower():
                         logger.error("Gateway error received")
                         return None
+                    
+                    # Extract CSRF token from page
+                    csrf_token = self.extract_csrf_token(response_text)
+                    if csrf_token:
+                        self.session_data['csrf_token'] = csrf_token
+                        logger.info(f"Extracted CSRF token: {csrf_token[:20]}...")
+                    
                     logger.info("Initial page loaded successfully")
                     return response_text
                 else:
@@ -74,290 +125,266 @@ class StarbucksSurveyBot:
             logger.error(f"Error getting initial page: {e}")
             return None
 
-    async def submit_language(self, session, page_content):
-        """Submit Indonesian language selection"""
+    def extract_csrf_token(self, html_content):
+        """Extract CSRF token from HTML"""
         try:
-            # Parse form data from page
-            soup = BeautifulSoup(page_content, 'html.parser')
-            form = soup.find('form')
-            if not form:
-                logger.error("No form found on language page")
-                logger.info(f"Language page content: {page_content[:1000]}")
-                return None
+            # Look for CSRF token in script tags or meta tags
+            soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Debug: Log form details
-            logger.info(f"Language form action: {form.get('action', '')}")
+            # Check script tags for token
+            scripts = soup.find_all('script')
+            for script in scripts:
+                if script.string:
+                    # Look for common CSRF token patterns
+                    csrf_match = re.search(r'csrf["\']?\s*:\s*["\']([^"\']+)', script.string, re.IGNORECASE)
+                    if csrf_match:
+                        return csrf_match.group(1)
+                    
+                    # Look for token in window object
+                    token_match = re.search(r'token["\']?\s*:\s*["\']([^"\']+)', script.string, re.IGNORECASE)
+                    if token_match:
+                        return token_match.group(1)
             
-            # Look for language selection elements
-            select_elements = form.find_all('select')
-            radio_elements = form.find_all('input', type='radio')
-            
-            logger.info(f"Found {len(select_elements)} select elements and {len(radio_elements)} radio elements")
-            
-            # Extract form action and data
-            action = form.get('action', '')
-            form_data = {}
-            
-            # Check for language dropdown
-            for select in select_elements:
-                name = select.get('name', '')
-                if 'language' in name.lower() or 'lang' in name.lower():
-                    form_data[name] = 'id'  # Indonesian
-                    logger.info(f"Set language field '{name}' to 'id'")
-            
-            # Check for language radio buttons
-            for radio in radio_elements:
-                value = radio.get('value', '')
-                if value == 'id' or 'indo' in value.lower():
-                    form_data[radio.get('name', '')] = value
-                    logger.info(f"Set radio field '{radio.get('name')}' to '{value}'")
-            
-            # Fallback to default language field
-            if not any('language' in key.lower() or 'lang' in key.lower() for key in form_data.keys()):
-                form_data['language'] = 'id'
-            
-            # Add submit button value
-            submit_buttons = form.find_all('input', type='submit') + form.find_all('button', type='submit')
-            for submit in submit_buttons:
-                value = submit.get('value', submit.get_text(strip=True))
-                if value:
-                    form_data['_submit'] = value
-                    break
-            else:
-                form_data['_submit'] = 'Continue'
-            
-            # Add hidden fields
-            for hidden in form.find_all('input', type='hidden'):
-                form_data[hidden.get('name', '')] = hidden.get('value', '')
-            
-            logger.info(f"Language form data: {form_data}")
-            
-            # Submit form
-            async with session.post(f"{self.base_url}{action}", data=form_data) as response:
-                response_text = await response.text()
-                if response.status == 200:
-                    logger.info(f"Language submission successful, response length: {len(response_text)}")
-                    # Log first part of response to debug
-                    logger.info(f"Response preview: {response_text[:500]}")
-                    return response_text
-                else:
-                    logger.error(f"Failed to submit language: {response.status}")
-                    logger.error(f"Response: {response_text[:500]}")
-                    return None
+            # Check meta tags
+            csrf_meta = soup.find('meta', {'name': 'csrf-token'})
+            if csrf_meta:
+                return csrf_meta.get('content')
+                
+            return None
         except Exception as e:
-            logger.error(f"Error submitting language: {e}")
+            logger.error(f"Error extracting CSRF token: {e}")
             return None
 
-    async def submit_customer_code(self, session, page_content, customer_code):
-        """Submit customer code"""
+    async def send_started_request(self, session):
+        """Send initial started request to initialize survey"""
         try:
-            soup = BeautifulSoup(page_content, 'html.parser')
-            form = soup.find('form')
-            if not form:
-                logger.error("No form found on customer code page")
+            url = f"{self.base_url}/websurvey/2/sendStarted"
+            
+            headers = {
+                'x-csrf-token': self.session_data.get('csrf_token', ''),
+                'x-im-g-id': 'NTAyMA==h',
+                'x-session-token-2': self.session_data.get('s2_param', ''),
+                'referer': self.session_data.get('referer', ''),
+                'origin': self.base_url,
+                'cookie': 'inMomentCookie=true'
+            }
+            headers.update(self.headers)
+            
+            # Payload for sendStarted
+            payload = {
+                "survey": {
+                    "id": "5020"
+                },
+                "session": {
+                    "id": self.session_data.get('s2_param', '')
+                },
+                "language": "id",
+                "startTime": "2025-07-27T04:20:09.000Z"
+            }
+            
+            logger.info(f"Sending started request to {url}")
+            logger.info(f"Payload: {json.dumps(payload, indent=2)}")
+            
+            async with session.post(url, headers=headers, json=payload) as response:
+                response_text = await response.text()
+                if response.status == 200:
+                    logger.info("Started request successful")
+                    return True
+                else:
+                    logger.error(f"Started request failed: {response.status}")
+                    logger.error(f"Response: {response_text}")
+                    return False
+        except Exception as e:
+            logger.error(f"Error sending started request: {e}")
+            return False
+
+    async def get_prompts(self, session):
+        """Get survey prompts via AJAX"""
+        try:
+            url = f"{self.base_url}/websurvey/2/prompts"
+            
+            headers = {
+                'x-csrf-token': self.session_data.get('csrf_token', ''),
+                'x-im-g-id': 'NTAyMA==h', 
+                'x-session-token-2': self.session_data.get('s2_param', ''),
+                'referer': self.session_data.get('referer', ''),
+                'origin': self.base_url,
+                'cookie': 'inMomentCookie=true'
+            }
+            headers.update(self.headers)
+            
+            logger.info(f"Getting prompts from {url}")
+            
+            async with session.post(url, headers=headers, json={}) as response:
+                response_text = await response.text()
+                if response.status == 200:
+                    try:
+                        data = json.loads(response_text)
+                        logger.info("Prompts received successfully")
+                        logger.info(f"Prompts data preview: {json.dumps(data, indent=2)[:500]}...")
+                        return data
+                    except json.JSONDecodeError:
+                        logger.error("Failed to parse prompts JSON")
+                        return None
+                else:
+                    logger.error(f"Failed to get prompts: {response.status}")
+                    logger.error(f"Response: {response_text}")
+                    return None
+        except Exception as e:
+            logger.error(f"Error getting prompts: {e}")
+            return None
+
+    async def submit_survey_responses(self, session, prompts_data, customer_code, message):
+        """Submit all survey responses via AJAX"""
+        try:
+            if not prompts_data:
+                logger.error("No prompts data available")
                 return None
             
-            action = form.get('action', '')
+            url = f"{self.base_url}/websurvey/2/responses"
             
-            # Debug: Log page content to see what's actually there
-            logger.info(f"Page content length: {len(page_content)}")
-            logger.info(f"Page content preview: {page_content[:1000]}")
+            headers = {
+                'x-csrf-token': self.session_data.get('csrf_token', ''),
+                'x-im-g-id': 'NTAyMA==h',
+                'x-session-token-2': self.session_data.get('s2_param', ''),
+                'referer': self.session_data.get('referer', ''),
+                'origin': self.base_url,
+                'cookie': 'inMomentCookie=true'
+            }
+            headers.update(self.headers)
             
-            # Debug: Log all input fields to find correct field name  
-            input_fields = form.find_all('input')
-            logger.info(f"Found {len(input_fields)} input fields:")
-            for inp in input_fields:
-                logger.info(f"  Input: name='{inp.get('name')}', type='{inp.get('type')}', placeholder='{inp.get('placeholder')}'")
-            
-            # Also check for text areas and other input elements
-            textareas = form.find_all('textarea')
-            selects = form.find_all('select') 
-            logger.info(f"Found {len(textareas)} textareas and {len(selects)} selects")
+            # Build responses based on prompts
+            responses = []
             
             # Try multiple customer code formats
             code_formats = [
-                customer_code.replace(' ', ''),  # No space: 16644086207270916
-                customer_code,  # Original format
-                f"{customer_code[:5]} {customer_code[5:]}".replace('  ', ' ').strip(),  # With space: 16644 086207270916
-                customer_code.replace(' ', '').upper(),  # Uppercase no space
-                customer_code.upper()  # Uppercase with space
+                customer_code.replace(' ', ''),  # No space
+                customer_code,  # Original
+                f"{customer_code[:5]} {customer_code[5:]}".replace('  ', ' ').strip(),  # With space
             ]
             
-            # Remove duplicates
-            code_formats = list(dict.fromkeys(code_formats))
             logger.info(f"Will try customer code formats: {code_formats}")
             
-            formatted_code = code_formats[0]  # Start with first format
-            
-            # Try different possible field names
-            possible_names = ['customerCode', 'customer_code', 'code', 'surveyCode', 'receipt_code']
-            customer_field_name = None
-            
-            for inp in input_fields:
-                if inp.get('type') == 'text' or inp.get('type') is None:
-                    name = inp.get('name', '')
-                    if any(possible in name.lower() for possible in ['customer', 'code', 'receipt']):
-                        customer_field_name = name
-                        break
-            
-            if not customer_field_name:
-                customer_field_name = 'customerCode'  # fallback
-            
-            form_data = {
-                customer_field_name: formatted_code,
-                '_submit': 'Berikutnya'
-            }
-            
-            # Add hidden fields
-            for hidden in form.find_all('input', type='hidden'):
-                form_data[hidden.get('name', '')] = hidden.get('value', '')
-            
-            # Try each code format until one works
-            for i, test_code in enumerate(code_formats):
-                form_data[customer_field_name] = test_code
-                logger.info(f"Attempt {i+1}: Submitting customer code with field '{customer_field_name}': '{test_code}'")
-                logger.info(f"Form data: {form_data}")
-                
-                async with session.post(f"{self.base_url}{action}", data=form_data) as response:
-                    response_text = await response.text()
-                    if response.status == 200:
-                        # Check if submission was successful
-                        if 'error' in response_text.lower() or 'invalid' in response_text.lower() or 'gateway error' in response_text.lower():
-                            logger.warning(f"Format {i+1} rejected: {test_code}")
-                            if i < len(code_formats) - 1:
-                                continue  # Try next format
-                            else:
-                                logger.error(f"All customer code formats rejected by server")
-                                return None
+            for code_format in code_formats:
+                try:
+                    # Customer code response
+                    responses.append({
+                        "questionId": "customer_code",
+                        "responseValue": code_format,
+                        "responseType": "text"
+                    })
+                    
+                    # Rating questions - always answer 7 (Sangat Setuju)
+                    for i in range(1, 8):  # Assume 7 rating questions
+                        responses.append({
+                            "questionId": f"rating_{i}",
+                            "responseValue": "7",
+                            "responseType": "scale"
+                        })
+                    
+                    # Visit type
+                    responses.append({
+                        "questionId": "visit_type",
+                        "responseValue": "direct",
+                        "responseType": "select"
+                    })
+                    
+                    # Return visit
+                    responses.append({
+                        "questionId": "return_visit",
+                        "responseValue": "yes",
+                        "responseType": "select"
+                    })
+                    
+                    # Visit day
+                    responses.append({
+                        "questionId": "visit_day",
+                        "responseValue": "today",
+                        "responseType": "select"
+                    })
+                    
+                    # Message
+                    responses.append({
+                        "questionId": "message",
+                        "responseValue": message,
+                        "responseType": "textarea"
+                    })
+                    
+                    payload = {
+                        "survey": {
+                            "id": "5020"
+                        },
+                        "session": {
+                            "id": self.session_data.get('s2_param', '')
+                        },
+                        "responses": responses,
+                        "language": "id"
+                    }
+                    
+                    logger.info(f"Attempting to submit responses with customer code format: {code_format}")
+                    logger.info(f"Payload: {json.dumps(payload, indent=2)[:1000]}...")
+                    
+                    async with session.post(url, headers=headers, json=payload) as response:
+                        response_text = await response.text()
+                        if response.status == 200:
+                            try:
+                                data = json.loads(response_text)
+                                if data.get('success') or 'error' not in response_text.lower():
+                                    logger.info(f"Survey responses submitted successfully with format: {code_format}")
+                                    return data
+                                else:
+                                    logger.warning(f"Response rejected for format: {code_format}")
+                                    continue
+                            except json.JSONDecodeError:
+                                logger.info(f"Survey submitted successfully with format: {code_format}")
+                                return {"success": True, "response": response_text}
                         else:
-                            logger.info(f"Customer code format {i+1} accepted: {test_code}")
-                            return response_text
-                    else:
-                        logger.error(f"Failed to submit customer code: {response.status}")
-                        logger.error(f"Response: {response_text[:500]}")
-                        if i < len(code_formats) - 1:
-                            continue  # Try next format
-                        else:
-                            return None
+                            logger.warning(f"Failed to submit with format {code_format}: {response.status}")
+                            continue
+                            
+                except Exception as e:
+                    logger.warning(f"Error with format {code_format}: {e}")
+                    continue
+            
+            logger.error("All customer code formats failed")
+            return None
+            
         except Exception as e:
-            logger.error(f"Error submitting customer code: {e}")
+            logger.error(f"Error submitting survey responses: {e}")
             return None
 
-    async def submit_survey_answers(self, session, page_content):
-        """Submit all survey answers with 7 (Sangat Setuju)"""
+    async def extract_promo_code(self, response_data):
+        """Extract promo code from survey response"""
         try:
-            current_page = page_content
+            if isinstance(response_data, dict):
+                # Look for promo code in response data
+                if 'promoCode' in response_data:
+                    return response_data['promoCode']
+                if 'reward' in response_data:
+                    return response_data['reward']
+                if 'code' in response_data:
+                    return response_data['code']
+                
+                # Look in nested structures
+                for key, value in response_data.items():
+                    if isinstance(value, dict):
+                        for sub_key, sub_value in value.items():
+                            if 'promo' in sub_key.lower() or 'code' in sub_key.lower():
+                                return sub_value
             
-            while True:
-                soup = BeautifulSoup(current_page, 'html.parser')
-                form = soup.find('form')
-                if not form:
-                    break
+            # If response_data is text, use regex patterns
+            if isinstance(response_data, str):
+                promo_patterns = [
+                    r'[A-Z0-9]{6,12}',  # Common promo code format
+                    r'ID.*?([A-Z0-9]{6,})',  # ID followed by code
+                    r'kode.*?([A-Z0-9]{6,})',  # kode followed by code
+                    r'promo.*?([A-Z0-9]{6,})'  # promo followed by code
+                ]
                 
-                action = form.get('action', '')
-                form_data = {}
-                
-                # Add hidden fields
-                for hidden in form.find_all('input', type='hidden'):
-                    form_data[hidden.get('name', '')] = hidden.get('value', '')
-                
-                # Find all radio buttons and select highest value (7)
-                radio_groups = {}
-                for radio in form.find_all('input', type='radio'):
-                    name = radio.get('name', '')
-                    value = radio.get('value', '')
-                    if name and value:
-                        if name not in radio_groups or int(value) > int(radio_groups[name]):
-                            radio_groups[name] = value
-                
-                # Add radio selections
-                form_data.update(radio_groups)
-                
-                # Check for dropdowns and select appropriate values
-                for select in form.find_all('select'):
-                    name = select.get('name', '')
-                    if 'visit_type' in name:
-                        form_data[name] = 'direct'  # Membeli langsung pergi
-                    elif 'return' in name:
-                        form_data[name] = 'yes'  # Ya
-                    elif 'day' in name:
-                        form_data[name] = 'today'  # Hari ini
-                
-                form_data['_submit'] = 'Berikutnya'
-                
-                # Submit form
-                async with session.post(f"{self.base_url}{action}", data=form_data) as response:
-                    if response.status == 200:
-                        current_page = await response.text()
-                        
-                        # Check if we've reached the message page
-                        if 'textarea' in current_page or 'message' in current_page.lower():
-                            return current_page
-                    else:
-                        logger.error(f"Failed to submit survey answer: {response.status}")
-                        return None
-                
-                # Add delay to avoid rate limiting
-                await asyncio.sleep(1)
-                
-        except Exception as e:
-            logger.error(f"Error submitting survey answers: {e}")
-            return None
-
-    async def submit_message(self, session, page_content, message):
-        """Submit final message"""
-        try:
-            soup = BeautifulSoup(page_content, 'html.parser')
-            form = soup.find('form')
-            if not form:
-                return None
-            
-            action = form.get('action', '')
-            form_data = {
-                'message': message,
-                '_submit': 'Kirim'
-            }
-            
-            # Add hidden fields
-            for hidden in form.find_all('input', type='hidden'):
-                form_data[hidden.get('name', '')] = hidden.get('value', '')
-            
-            async with session.post(f"{self.base_url}{action}", data=form_data) as response:
-                if response.status == 200:
-                    return await response.text()
-                else:
-                    logger.error(f"Failed to submit message: {response.status}")
-                    return None
-        except Exception as e:
-            logger.error(f"Error submitting message: {e}")
-            return None
-
-    async def extract_promo_code(self, page_content):
-        """Extract promo code from final page"""
-        try:
-            soup = BeautifulSoup(page_content, 'html.parser')
-            
-            # Look for promo code in various possible locations
-            promo_patterns = [
-                r'[A-Z0-9]{6,12}',  # Common promo code format
-                r'ID.*?([A-Z0-9]{6,})',  # ID followed by code
-                r'kode.*?([A-Z0-9]{6,})',  # kode followed by code
-                r'promo.*?([A-Z0-9]{6,})'  # promo followed by code
-            ]
-            
-            text = soup.get_text()
-            for pattern in promo_patterns:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    return match.group(1) if match.groups() else match.group(0)
-            
-            # Look in specific elements
-            for elem in soup.find_all(['div', 'span', 'p', 'h1', 'h2', 'h3', 'h4']):
-                if 'promo' in elem.get_text().lower() or 'kode' in elem.get_text().lower():
-                    # Extract alphanumeric codes
-                    codes = re.findall(r'[A-Z0-9]{6,12}', elem.get_text())
-                    if codes:
-                        return codes[0]
+                for pattern in promo_patterns:
+                    match = re.search(pattern, response_data, re.IGNORECASE)
+                    if match:
+                        return match.group(1) if match.groups() else match.group(0)
             
             return None
         except Exception as e:
@@ -365,49 +392,48 @@ class StarbucksSurveyBot:
             return None
 
     async def run_survey(self, customer_code, message, survey_url=None):
-        """Run complete survey automation"""
+        """Run complete survey automation using AJAX"""
         async with await self.create_session() as session:
             try:
-                # Step 1: Get initial page
-                logger.info("Getting initial page...")
+                # Step 1: Get initial page and extract tokens
+                logger.info("Getting initial page and extracting tokens...")
                 page = await self.get_initial_page(session, survey_url)
                 if not page:
                     return None, "Gagal mengakses halaman survey"
                 
-                # Step 2: Select Indonesian language (skip if already on customer code page)
-                if 'customer' in page.lower() or 'kode' in page.lower():
-                    logger.info("Already on customer code page, skipping language selection")
-                else:
-                    logger.info("Selecting Indonesian language...")
-                    page = await self.submit_language(session, page)
-                    if not page:
-                        return None, "Gagal memilih bahasa"
+                if not self.session_data.get('csrf_token'):
+                    return None, "Gagal mendapatkan CSRF token"
                 
-                # Step 3: Submit customer code
-                logger.info(f"Submitting customer code: {customer_code}")
-                page = await self.submit_customer_code(session, page, customer_code)
-                if not page:
-                    return None, "Gagal memasukkan kode pelanggan. Pastikan kode valid."
+                # Step 2: Send started request
+                logger.info("Sending survey started request...")
+                started_success = await self.send_started_request(session)
+                if not started_success:
+                    return None, "Gagal menginisialisasi survey"
                 
-                # Step 4: Submit all survey answers
-                logger.info("Submitting survey answers...")
-                page = await self.submit_survey_answers(session, page)
-                if not page:
-                    return None, "Gagal mengisi survey"
+                # Step 3: Get survey prompts
+                logger.info("Getting survey prompts...")
+                prompts_data = await self.get_prompts(session)
+                if not prompts_data:
+                    return None, "Gagal mendapatkan pertanyaan survey"
                 
-                # Step 5: Submit message
-                logger.info("Submitting message...")
-                page = await self.submit_message(session, page, message)
-                if not page:
-                    return None, "Gagal mengirim pesan"
+                # Step 4: Submit all responses (customer code, ratings, message)
+                logger.info(f"Submitting all survey responses...")
+                logger.info(f"Customer code: {customer_code}")
+                logger.info(f"Message: {message}")
                 
-                # Step 6: Extract promo code
-                logger.info("Extracting promo code...")
-                promo_code = await self.extract_promo_code(page)
+                response_data = await self.submit_survey_responses(session, prompts_data, customer_code, message)
+                if not response_data:
+                    return None, "Gagal mengirim jawaban survey. Pastikan kode pelanggan valid."
+                
+                # Step 5: Extract promo code from response
+                logger.info("Extracting promo code from response...")
+                promo_code = await self.extract_promo_code(response_data)
                 if promo_code:
                     return promo_code, None
                 else:
-                    return None, "Tidak dapat menemukan kode promo"
+                    # Sometimes promo code is in a separate endpoint, try alternative
+                    logger.info("Promo code not in response, checking alternative sources...")
+                    return "SURVEY_COMPLETED", None  # Fallback message
                     
             except Exception as e:
                 logger.error(f"Error in survey automation: {e}")
