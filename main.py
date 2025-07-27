@@ -480,13 +480,13 @@ class StarbucksSurveyBot:
                 ("Pilih jenis kunjungan: Membeli dan langsung pergi", 2, 4),
                 ("Apakah pesan makanan: Ya", 2, 3),
                 ("Kapan kembali: Hari ini atau besok", 2, 3),
-                ("Rating 1/7: Sangat Setuju (7)", 1, 2),
-                ("Rating 2/7: Sangat Setuju (7)", 1, 2),
-                ("Rating 3/7: Sangat Setuju (7)", 1, 2),
-                ("Rating 4/7: Sangat Setuju (7)", 1, 2),
-                ("Rating 5/7: Sangat Setuju (7)", 1, 2),
-                ("Rating 6/7: Sangat Setuju (7)", 1, 2),
-                ("Rating 7/7: Sangat Setuju (7)", 1, 2),
+                ("Rating 1/7: Memilih '7 Sangat setuju'", 1, 2),
+                ("Rating 2/7: Memilih '7 Sangat setuju'", 1, 2),
+                ("Rating 3/7: Memilih '7 Sangat setuju'", 1, 2),
+                ("Rating 4/7: Memilih '7 Sangat setuju'", 1, 2),
+                ("Rating 5/7: Memilih '7 Sangat setuju'", 1, 2),
+                ("Rating 6/7: Memilih '7 Sangat setuju'", 1, 2),
+                ("Rating 7/7: Memilih '7 Sangat setuju'", 1, 2),
                 (f"Mengirim feedback: {message[:30]}...", 3, 5),
                 ("Memproses hasil survey...", 2, 4),
                 ("Menghasilkan kode promo...", 1, 3)
@@ -651,9 +651,9 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "• Memilih Bahasa Indonesia\n"
         "• Input kode pelanggan\n"
         "• Jawab pertanyaan kunjungan\n"
-        "• Isi rating 1-7 (semua Sangat Setuju)\n"
+        "• Isi rating 1-7 (semua pilih '7 Sangat setuju')\n"
         "• Kirim feedback message\n"
-        "• Generate promo code\n\n"
+        "• Generate kode promo 5 digit\n\n"
         "⏱️ Estimasi waktu: 30-45 detik\n"
         "Mohon tunggu..."
     )
@@ -673,7 +673,7 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"📱 Tunjukkan kode ini di Starbucks untuk mendapatkan promo/diskon!\n\n"
                 f"Survey details:\n"
                 f"• Kode Pelanggan: {customer_code}\n"
-                f"• Semua rating: Sangat Setuju (7)\n"
+                f"• Semua rating: 7 (Sangat setuju)\n"
                 f"• Pesan: {message}\n\n"
                 f"Gunakan /start untuk mengisi survey lagi."
             )
@@ -683,7 +683,7 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"✅ Status: Survey Complete\n\n"
                 f"Survey Anda telah dikirim dengan:\n"
                 f"• Kode Pelanggan: {customer_code}\n"
-                f"• Semua rating: Sangat Setuju (7)\n"
+                f"• Semua rating: 7 (Sangat setuju)\n"
                 f"• Pesan: {message}\n\n"
                 f"Note: Promo code mungkin dikirim via email atau muncul di halaman akhir.\n\n"
                 f"Gunakan /start untuk mengisi survey lagi."
