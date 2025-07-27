@@ -29,6 +29,8 @@ user_sessions = {}
 class StarbucksSurveyBot:
     def __init__(self):
         self.base_url = "https://www.mystarbucksvisit.com"
+        # Indonesian proxy for geo-targeting and avoiding detection
+        self.proxy_url = "http://georgesam222:Komang222_country-id@geo.iproyal.com:12321"
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
@@ -46,8 +48,9 @@ class StarbucksSurveyBot:
         self.session_data = {}
 
     async def create_session(self):
-        """Create aiohttp session with browser-like settings"""
+        """Create aiohttp session with Indonesian proxy for better geo-targeting"""
         timeout = aiohttp.ClientTimeout(total=45, connect=15)
+        
         connector = aiohttp.TCPConnector(
             limit=20,
             limit_per_host=5,
@@ -55,11 +58,14 @@ class StarbucksSurveyBot:
             enable_cleanup_closed=True
         )
         
+        logger.info(f"🌐 Using Indonesian proxy for geo-targeting: {self.proxy_url.split('@')[1]}")
+        
         return aiohttp.ClientSession(
             headers=self.headers,
             timeout=timeout,
             connector=connector,
-            cookie_jar=aiohttp.CookieJar()
+            cookie_jar=aiohttp.CookieJar(),
+            connector_owner=False
         )
 
     def extract_session_from_url(self, survey_url):
@@ -134,11 +140,11 @@ class StarbucksSurveyBot:
             # Add random delay to avoid detection
             await asyncio.sleep(random.uniform(1, 3))
             
-            # Get initial page with mobile browser headers
-            async with session.get(url, headers=self.headers) as response:
+            # Get initial page with mobile browser headers and Indonesian proxy
+            async with session.get(url, headers=self.headers, proxy=self.proxy_url) as response:
                 response_text = await response.text()
                 if response.status == 200:
-                    logger.info("Initial page loaded successfully")
+                    logger.info("✅ Initial page loaded successfully via Indonesian proxy")
                     return response_text
                 else:
                     logger.error(f"Failed to get initial page: {response.status}")
@@ -194,7 +200,7 @@ class StarbucksSurveyBot:
             
             for endpoint in endpoints_to_try:
                 try:
-                    async with session.post(endpoint, data=form_data, headers=headers) as response:
+                    async with session.post(endpoint, data=form_data, headers=headers, proxy=self.proxy_url) as response:
                         logger.info(f"Language endpoint {endpoint}: {response.status}")
                         
                         if response.status in [200, 302]:
@@ -227,7 +233,7 @@ class StarbucksSurveyBot:
                     code_url = f"{self.base_url}/websurvey/2/execute?_g={self.session_data.get('g_param', '')}&_s2={self.session_data.get('s2_param', '')}&code={code_format}#!/1"
                     
                     await asyncio.sleep(random.uniform(2, 4))
-                    async with session.get(code_url, headers=self.headers) as response:
+                    async with session.get(code_url, headers=self.headers, proxy=self.proxy_url) as response:
                         response_text = await response.text()
                         logger.info(f"Query param approach with {code_format}: {response.status}")
                         
@@ -277,7 +283,7 @@ class StarbucksSurveyBot:
                             'language': 'id'
                         }
                         
-                        async with session.post(endpoint, json=json_data, headers=headers) as response:
+                        async with session.post(endpoint, json=json_data, headers=headers, proxy=self.proxy_url) as response:
                             response_text = await response.text()
                             logger.info(f"AJAX approach {endpoint} with {code_format}: {response.status}")
                             
@@ -317,7 +323,7 @@ class StarbucksSurveyBot:
         
         for endpoint in endpoints_to_try:
             try:
-                async with session.post(endpoint, data=form_data, headers=headers) as response:
+                async with session.post(endpoint, data=form_data, headers=headers, proxy=self.proxy_url) as response:
                     response_text = await response.text()
                     logger.info(f"{step_name} endpoint {endpoint}: {response.status}")
                     
