@@ -45,28 +45,20 @@ class StarbucksSurveyBot:
     async def get_initial_page(self, session):
         """Get initial survey page - try multiple approaches"""
         try:
-            # Try with Indonesian language directly
+            # Use correct URL format like receipt
             session_id = self.generate_session_id()
-            url = f"{self.base_url}/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2={session_id}&language=id#!/2"
+            url = f"{self.base_url}/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2={session_id}#!/1"
             logger.info(f"Generated new session ID: {session_id}")
-            logger.info(f"Trying URL with Indonesian language: {url}")
-            logger.info(f"=== URL FOR MANUAL TEST: {url} ===")  # Easy to find in logs
+            logger.info(f"Using correct URL format: {url}")
+            logger.info(f"=== URL FOR MANUAL TEST: {url} ===")
             
             async with session.get(url) as response:
                 response_text = await response.text()
-                if response.status == 200 and 'gateway error' not in response_text.lower():
-                    logger.info("Direct Indonesian URL successful")
-                    return response_text
-                else:
-                    logger.warning(f"Direct Indonesian URL failed: {response.status}")
-            
-            # Fallback: try without language parameter
-            url2 = f"{self.base_url}/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2={session_id}#!/1"
-            logger.info(f"Trying fallback URL: {url2}")
-            
-            async with session.get(url2) as response:
-                response_text = await response.text()
                 if response.status == 200:
+                    if 'gateway error' in response_text.lower():
+                        logger.error("Gateway error received")
+                        return None
+                    logger.info("Initial page loaded successfully")
                     return response_text
                 else:
                     logger.error(f"Failed to get initial page: {response.status}")
