@@ -288,7 +288,7 @@ class StarbucksSurveyBot:
                         success_indicators = ['berikutnya', 'next', 'continue', 'thank', 'terima kasih', 'promo']
                         if any(word in response_text.lower() for word in success_indicators):
                             logger.info(f"✅ {step_name} step successful")
-                            return True
+                            return response_text  # Return response text for promo code extraction
                             
             except Exception as e:
                 logger.warning(f"{step_name} endpoint {endpoint} failed: {e}")
@@ -296,6 +296,66 @@ class StarbucksSurveyBot:
                 
         logger.warning(f"⚠️ {step_name} step may have failed, continuing...")
         return True  # Continue anyway
+
+    async def extract_promo_code(self, response_text):
+        """Extract promo code dari response HTML"""
+        try:
+            if not isinstance(response_text, str):
+                return None
+                
+            logger.info("🔍 Searching for promo code in response...")
+            
+            # Common promo code patterns
+            promo_patterns = [
+                r'(?:kode|code|promo|coupon|reward)[\s:]*([A-Z0-9]{4,12})',  # Kode: ABC123
+                r'([A-Z0-9]{6,12})',  # Stand-alone alphanumeric codes
+                r'(?:gratis|free|diskon|discount)[\s:]*([A-Z0-9]{4,12})',  # Free: ABC123
+                r'(?:voucher|kupon)[\s:]*([A-Z0-9]{4,12})',  # Voucher: ABC123
+                r'ID[\s:]*([A-Z0-9]{6,12})',  # ID: ABC123456
+            ]
+            
+            # Search in HTML content
+            for pattern in promo_patterns:
+                matches = re.findall(pattern, response_text, re.IGNORECASE)
+                for match in matches:
+                    # Filter out common false positives
+                    if len(match) >= 4 and not match.lower() in ['html', 'body', 'form', 'input']:
+                        logger.info(f"🎁 Potential promo code found: {match}")
+                        return match
+            
+            # Also search in parsed HTML
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(response_text, 'html.parser')
+                
+                # Look for text containing promo codes
+                text_content = soup.get_text()
+                for pattern in promo_patterns:
+                    matches = re.findall(pattern, text_content, re.IGNORECASE)
+                    for match in matches:
+                        if len(match) >= 4 and not match.lower() in ['html', 'body', 'form', 'input']:
+                            logger.info(f"🎁 Promo code found in parsed HTML: {match}")
+                            return match
+                            
+                # Look for specific elements that might contain promo codes
+                promo_elements = soup.find_all(['span', 'div', 'p', 'strong', 'b'], 
+                                             text=re.compile(r'[A-Z0-9]{6,12}'))
+                for element in promo_elements:
+                    code_text = element.get_text().strip()
+                    code_match = re.search(r'([A-Z0-9]{6,12})', code_text)
+                    if code_match:
+                        logger.info(f"🎁 Promo code found in element: {code_match.group(1)}")
+                        return code_match.group(1)
+                        
+            except ImportError:
+                pass  # BeautifulSoup not available
+                
+            logger.info("❌ No promo code found in response")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting promo code: {e}")
+            return None
 
     async def submit_survey_questions(self, session, message):
         """Submit all survey questions step by step"""
@@ -347,7 +407,7 @@ class StarbucksSurveyBot:
             if not success:
                 return False
                 
-            # Step 4: Final feedback
+            # Step 4: Final feedback (this should return promo code)
             await asyncio.sleep(random.uniform(2, 4)) 
             step4_data = {
                 'feedback': message,
@@ -356,8 +416,15 @@ class StarbucksSurveyBot:
                 '_s2': self.session_data.get('s2_param', '')
             }
             
-            success = await self.submit_form_step(session, step4_data, headers, "final feedback")
-            return success
+            final_response = await self.submit_form_step(session, step4_data, headers, "final feedback")
+            
+            # Try to extract promo code from final response
+            if isinstance(final_response, str):
+                promo_code = await self.extract_promo_code(final_response)
+                if promo_code:
+                    return promo_code  # Return the promo code
+                    
+            return "SURVEY_COMPLETED"  # Fallback if no promo code found
             
         except Exception as e:
             logger.error(f"Error submitting survey questions: {e}")
@@ -385,14 +452,19 @@ class StarbucksSurveyBot:
                 if not code_success:
                     return None, "Gagal memvalidasi kode pelanggan. Pastikan kode benar dan belum kadaluarsa."
                 
-                # Step 4: Submit survey questions
+                # Step 4: Submit survey questions and get promo code
                 logger.info("Step 4: Submitting survey questions...")
-                survey_success = await self.submit_survey_questions(session, message)
-                if not survey_success:
+                survey_result = await self.submit_survey_questions(session, message)
+                if not survey_result:
                     return None, "Gagal mengirim jawaban survey"
                 
-                logger.info("✅ Survey completed successfully!")
-                return "SURVEY_COMPLETED", None
+                # Check if we got a promo code
+                if isinstance(survey_result, str) and survey_result != "SURVEY_COMPLETED":
+                    logger.info(f"✅ Survey completed with promo code: {survey_result}")
+                    return survey_result, None  # Return promo code
+                else:
+                    logger.info("✅ Survey completed successfully!")
+                    return "SURVEY_COMPLETED", None
                     
             except Exception as e:
                 logger.error(f"Error in survey automation: {e}")
@@ -498,15 +570,29 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await processing_msg.delete()
     
     if result:
-        await update.message.reply_text(
-            f"🎉 Survey berhasil diselesaikan!\n\n"
-            f"✅ Status: {result}\n\n"
-            f"Survey Anda telah dikirim dengan:\n"
-            f"• Kode Pelanggan: {customer_code}\n"
-            f"• Semua rating: Sangat Setuju (7)\n"
-            f"• Pesan: {message}\n\n"
-            f"Gunakan /start untuk mengisi survey lagi."
-        )
+        # Check if result is a promo code
+        if result != "SURVEY_COMPLETED" and len(result) >= 4:
+            await update.message.reply_text(
+                f"🎉 Survey berhasil diselesaikan!\n\n"
+                f"🎁 KODE PROMO ANDA: {result}\n\n"
+                f"📱 Tunjukkan kode ini di Starbucks untuk mendapatkan promo/diskon!\n\n"
+                f"Survey details:\n"
+                f"• Kode Pelanggan: {customer_code}\n"
+                f"• Semua rating: Sangat Setuju (7)\n"
+                f"• Pesan: {message}\n\n"
+                f"Gunakan /start untuk mengisi survey lagi."
+            )
+        else:
+            await update.message.reply_text(
+                f"🎉 Survey berhasil diselesaikan!\n\n"
+                f"✅ Status: Survey Complete\n\n"
+                f"Survey Anda telah dikirim dengan:\n"
+                f"• Kode Pelanggan: {customer_code}\n"
+                f"• Semua rating: Sangat Setuju (7)\n"
+                f"• Pesan: {message}\n\n"
+                f"Note: Promo code mungkin dikirim via email atau muncul di halaman akhir.\n\n"
+                f"Gunakan /start untuk mengisi survey lagi."
+            )
     else:
         await update.message.reply_text(
             f"❌ Gagal menyelesaikan survey\n\n"
