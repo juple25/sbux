@@ -421,9 +421,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "3. Kirimkan pesan untuk survey\n"
         "4. Bot akan mengisi survey otomatis\n"
         "5. Dapatkan kode promo Anda!\n\n"
-        "Silakan kirimkan *URL survey* dari QR code receipt Anda:\n"
-        "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=\\.\\.\\.)",
-        parse_mode='Markdown'
+        "Silakan kirimkan URL survey dari QR code receipt Anda:\n"
+        "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...)"
     )
     
     return WAITING_URL
@@ -445,8 +444,7 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     
     await update.message.reply_text(
         "✅ URL survey tersimpan\n\n"
-        "Sekarang kirimkan *kode pelanggan* dari receipt:",
-        parse_mode='Markdown'
+        "Sekarang kirimkan kode pelanggan dari receipt:"
     )
     
     return WAITING_CODE
@@ -466,9 +464,8 @@ async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     user_sessions[user_id]['customer_code'] = customer_code
     
     await update.message.reply_text(
-        f"✅ Kode pelanggan: `{customer_code}`\n\n"
-        "Sekarang kirimkan *pesan* yang ingin Anda sampaikan dalam survey:",
-        parse_mode='Markdown'
+        f"✅ Kode pelanggan: {customer_code}\n\n"
+        "Sekarang kirimkan pesan yang ingin Anda sampaikan dalam survey:"
     )
     
     return WAITING_MESSAGE
@@ -489,7 +486,7 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     # Send processing message
     processing_msg = await update.message.reply_text(
-        "⏳ *Sedang memproses survey...*\n\n"
+        "⏳ Sedang memproses survey...\n\n"
         "Langkah:\n"
         "☐ Mengakses halaman survey\n"
         "☐ Memilih bahasa Indonesia\n"
@@ -497,8 +494,7 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "☐ Mengisi survey (semua jawaban: Sangat Setuju)\n"
         "☐ Mengirim pesan\n"
         "☐ Mendapatkan kode promo\n\n"
-        "Mohon tunggu...",
-        parse_mode='Markdown'
+        "Mohon tunggu..."
     )
     
     # Run survey automation
@@ -509,18 +505,16 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     if promo_code:
         await update.message.reply_text(
-            f"🎉 *Survey berhasil diselesaikan!*\n\n"
-            f"🎁 *Kode Promo Anda:* `{promo_code}`\n\n"
+            f"🎉 Survey berhasil diselesaikan!\n\n"
+            f"🎁 Kode Promo Anda: {promo_code}\n\n"
             f"📱 Tunjukkan kode ini di Starbucks untuk mendapatkan promo!\n\n"
-            f"Gunakan /start untuk mengisi survey lagi.",
-            parse_mode='Markdown'
+            f"Gunakan /start untuk mengisi survey lagi."
         )
     else:
         await update.message.reply_text(
-            f"❌ *Gagal menyelesaikan survey*\n\n"
+            f"❌ Gagal menyelesaikan survey\n\n"
             f"Error: {error}\n\n"
-            f"Silakan coba lagi dengan /start",
-            parse_mode='Markdown'
+            f"Silakan coba lagi dengan /start"
         )
     
     # Clear session
