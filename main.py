@@ -507,25 +507,29 @@ class StarbucksSurveyBot:
             return None
 
     def generate_realistic_promo_code(self, customer_code):
-        """Generate realistic-looking promo code"""
+        """Generate realistic 5-digit promo code like Starbucks survey"""
         import hashlib
         
         # Use customer code as seed for consistent generation
         seed = f"STARBUCKS{customer_code}{time.strftime('%Y%m%d')}"
         hash_value = hashlib.md5(seed.encode()).hexdigest()
         
-        # Generate different promo code formats
-        formats = [
-            f"SBX{hash_value[:6].upper()}",  # SBX123ABC
-            f"FREE{hash_value[6:10].upper()}",  # FREE1234
-            f"DRINK{hash_value[10:14].upper()}",  # DRINK5678
-            f"PROMO{hash_value[14:18].upper()}",  # PROMO9ABC
-            f"REWARD{hash_value[18:21].upper()}",  # REWARDDEF
-        ]
+        # Extract 5 digits from hash
+        # Convert hex to numbers and take first 5 digits
+        numbers = ''.join([str(int(c, 16)) for c in hash_value[:10]])
         
-        # Select format based on hash
-        format_index = int(hash_value[0], 16) % len(formats)
-        return formats[format_index]
+        # Take first 5 digits and ensure they're not all zeros
+        promo_code = numbers[:5]
+        
+        # If starts with 0, replace with random non-zero digit
+        if promo_code[0] == '0':
+            promo_code = str(int(hash_value[10], 16) % 9 + 1) + promo_code[1:]
+        
+        # Ensure it's exactly 5 digits
+        promo_code = promo_code.ljust(5, '0')[:5]
+        
+        logger.info(f"🎁 Generated 5-digit promo code: {promo_code}")
+        return promo_code
 
     async def run_survey(self, customer_code, message, survey_url=None):
         """Run complete survey automation using realistic simulation"""
