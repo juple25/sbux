@@ -17,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # States untuk conversation
-WAITING_CODE, WAITING_MESSAGE = range(2)
+WAITING_URL, WAITING_CODE, WAITING_MESSAGE = range(3)
 
 # Data storage untuk session
 user_sessions = {}
@@ -42,14 +42,20 @@ class StarbucksSurveyBot:
         """Generate new session ID"""
         return str(uuid.uuid4())
 
-    async def get_initial_page(self, session):
-        """Get initial survey page - try multiple approaches"""
+    async def get_initial_page(self, session, survey_url=None):
+        """Get initial survey page using provided URL or generate new one"""
         try:
-            # Use correct URL format like receipt
-            session_id = self.generate_session_id()
-            url = f"{self.base_url}/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2={session_id}#!/1"
-            logger.info(f"Generated new session ID: {session_id}")
-            logger.info(f"Using correct URL format: {url}")
+            if survey_url:
+                # Use URL provided by user
+                url = survey_url
+                logger.info(f"Using provided survey URL: {url}")
+            else:
+                # Use correct URL format like receipt
+                session_id = self.generate_session_id()
+                url = f"{self.base_url}/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2={session_id}#!/1"
+                logger.info(f"Generated new session ID: {session_id}")
+                logger.info(f"Using generated URL: {url}")
+            
             logger.info(f"=== URL FOR MANUAL TEST: {url} ===")
             
             async with session.get(url) as response:
@@ -349,13 +355,13 @@ class StarbucksSurveyBot:
             logger.error(f"Error extracting promo code: {e}")
             return None
 
-    async def run_survey(self, customer_code, message):
+    async def run_survey(self, customer_code, message, survey_url=None):
         """Run complete survey automation"""
         async with await self.create_session() as session:
             try:
                 # Step 1: Get initial page
                 logger.info("Getting initial page...")
-                page = await self.get_initial_page(session)
+                page = await self.get_initial_page(session, survey_url)
                 if not page:
                     return None, "Gagal mengakses halaman survey"
                 
@@ -410,11 +416,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "🌟 *Selamat datang di Starbucks Survey Bot!*\n\n"
         "Bot ini akan membantu Anda mengisi survey Starbucks secara otomatis.\n\n"
         "📝 *Cara penggunaan:*\n"
-        "1. Kirimkan kode pelanggan Anda\n"
-        "2. Kirimkan pesan untuk survey\n"
-        "3. Bot akan mengisi survey otomatis\n"
-        "4. Dapatkan kode promo Anda!\n\n"
-        "Silakan kirimkan *kode pelanggan* Anda:",
+        "1. Kirimkan URL survey dari receipt QR code\n"
+        "2. Kirimkan kode pelanggan Anda\n"
+        "3. Kirimkan pesan untuk survey\n"
+        "4. Bot akan mengisi survey otomatis\n"
+        "5. Dapatkan kode promo Anda!\n\n"
+        "Silakan kirimkan *URL survey* dari QR code receipt Anda:\n"
+        "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...)",
+        parse_mode='Markdown'
+    )
+    
+    return WAITING_URL
+
+async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive survey URL"""
+    user_id = update.effective_user.id
+    survey_url = update.message.text.strip()
+    
+    # Validate URL
+    if not survey_url.startswith('https://www.mystarbucksvisit.com'):
+        await update.message.reply_text(
+            "❌ URL tidak valid. Silakan kirim URL dari QR code receipt Starbucks:\n"
+            "Format: https://www.mystarbucksvisit.com/websurvey/..."
+        )
+        return WAITING_URL
+    
+    user_sessions[user_id]['survey_url'] = survey_url
+    
+    await update.message.reply_text(
+        f"✅ URL survey tersimpan\n\n"
+        "Sekarang kirimkan *kode pelanggan* dari receipt:",
         parse_mode='Markdown'
     )
     
@@ -454,6 +485,7 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return WAITING_MESSAGE
     
     customer_code = user_sessions[user_id].get('customer_code')
+    survey_url = user_sessions[user_id].get('survey_url')
     
     # Send processing message
     processing_msg = await update.message.reply_text(
@@ -470,7 +502,7 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     
     # Run survey automation
-    promo_code, error = await bot.run_survey(customer_code, message)
+    promo_code, error = await bot.run_survey(customer_code, message, survey_url)
     
     # Delete processing message
     await processing_msg.delete()
@@ -517,6 +549,7 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
+            WAITING_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)],
             WAITING_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code)],
             WAITING_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message)],
         },
