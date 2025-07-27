@@ -95,11 +95,38 @@ class StarbucksSurveyBot:
             soup = BeautifulSoup(page_content, 'html.parser')
             form = soup.find('form')
             if not form:
+                logger.error("No form found on customer code page")
                 return None
             
             action = form.get('action', '')
+            
+            # Debug: Log all input fields to find correct field name
+            input_fields = form.find_all('input')
+            logger.info(f"Found {len(input_fields)} input fields:")
+            for inp in input_fields:
+                logger.info(f"  Input: name='{inp.get('name')}', type='{inp.get('type')}', placeholder='{inp.get('placeholder')}'")
+            
+            # Format customer code with space (as shown on receipt)
+            formatted_code = customer_code.replace(' ', '')  # Remove existing spaces
+            if len(formatted_code) >= 12:  # If long enough, add space after 5th digit
+                formatted_code = f"{formatted_code[:5]} {formatted_code[5:]}"
+            
+            # Try different possible field names
+            possible_names = ['customerCode', 'customer_code', 'code', 'surveyCode', 'receipt_code']
+            customer_field_name = None
+            
+            for inp in input_fields:
+                if inp.get('type') == 'text' or inp.get('type') is None:
+                    name = inp.get('name', '')
+                    if any(possible in name.lower() for possible in ['customer', 'code', 'receipt']):
+                        customer_field_name = name
+                        break
+            
+            if not customer_field_name:
+                customer_field_name = 'customerCode'  # fallback
+            
             form_data = {
-                'customerCode': customer_code,
+                customer_field_name: formatted_code,
                 '_submit': 'Berikutnya'
             }
             
@@ -107,11 +134,20 @@ class StarbucksSurveyBot:
             for hidden in form.find_all('input', type='hidden'):
                 form_data[hidden.get('name', '')] = hidden.get('value', '')
             
+            logger.info(f"Submitting customer code with field '{customer_field_name}': '{formatted_code}'")
+            logger.info(f"Form data: {form_data}")
+            
             async with session.post(f"{self.base_url}{action}", data=form_data) as response:
+                response_text = await response.text()
                 if response.status == 200:
-                    return await response.text()
+                    # Check if submission was successful by looking for error messages
+                    if 'error' in response_text.lower() or 'invalid' in response_text.lower():
+                        logger.error(f"Customer code rejected by server")
+                        return None
+                    return response_text
                 else:
                     logger.error(f"Failed to submit customer code: {response.status}")
+                    logger.error(f"Response: {response_text[:500]}")
                     return None
         except Exception as e:
             logger.error(f"Error submitting customer code: {e}")
