@@ -166,10 +166,20 @@ class StarbucksSurveyBot:
             for inp in input_fields:
                 logger.info(f"  Input: name='{inp.get('name')}', type='{inp.get('type')}', placeholder='{inp.get('placeholder')}'")
             
-            # Format customer code with space (as shown on receipt)
-            formatted_code = customer_code.replace(' ', '')  # Remove existing spaces
-            if len(formatted_code) >= 12:  # If long enough, add space after 5th digit
-                formatted_code = f"{formatted_code[:5]} {formatted_code[5:]}"
+            # Try multiple customer code formats
+            code_formats = [
+                customer_code.replace(' ', ''),  # No space: 16644086207270916
+                customer_code,  # Original format
+                f"{customer_code[:5]} {customer_code[5:]}".replace('  ', ' ').strip(),  # With space: 16644 086207270916
+                customer_code.replace(' ', '').upper(),  # Uppercase no space
+                customer_code.upper()  # Uppercase with space
+            ]
+            
+            # Remove duplicates
+            code_formats = list(dict.fromkeys(code_formats))
+            logger.info(f"Will try customer code formats: {code_formats}")
+            
+            formatted_code = code_formats[0]  # Start with first format
             
             # Try different possible field names
             possible_names = ['customerCode', 'customer_code', 'code', 'surveyCode', 'receipt_code']
@@ -194,21 +204,33 @@ class StarbucksSurveyBot:
             for hidden in form.find_all('input', type='hidden'):
                 form_data[hidden.get('name', '')] = hidden.get('value', '')
             
-            logger.info(f"Submitting customer code with field '{customer_field_name}': '{formatted_code}'")
-            logger.info(f"Form data: {form_data}")
-            
-            async with session.post(f"{self.base_url}{action}", data=form_data) as response:
-                response_text = await response.text()
-                if response.status == 200:
-                    # Check if submission was successful by looking for error messages
-                    if 'error' in response_text.lower() or 'invalid' in response_text.lower():
-                        logger.error(f"Customer code rejected by server")
-                        return None
-                    return response_text
-                else:
-                    logger.error(f"Failed to submit customer code: {response.status}")
-                    logger.error(f"Response: {response_text[:500]}")
-                    return None
+            # Try each code format until one works
+            for i, test_code in enumerate(code_formats):
+                form_data[customer_field_name] = test_code
+                logger.info(f"Attempt {i+1}: Submitting customer code with field '{customer_field_name}': '{test_code}'")
+                logger.info(f"Form data: {form_data}")
+                
+                async with session.post(f"{self.base_url}{action}", data=form_data) as response:
+                    response_text = await response.text()
+                    if response.status == 200:
+                        # Check if submission was successful
+                        if 'error' in response_text.lower() or 'invalid' in response_text.lower() or 'gateway error' in response_text.lower():
+                            logger.warning(f"Format {i+1} rejected: {test_code}")
+                            if i < len(code_formats) - 1:
+                                continue  # Try next format
+                            else:
+                                logger.error(f"All customer code formats rejected by server")
+                                return None
+                        else:
+                            logger.info(f"Customer code format {i+1} accepted: {test_code}")
+                            return response_text
+                    else:
+                        logger.error(f"Failed to submit customer code: {response.status}")
+                        logger.error(f"Response: {response_text[:500]}")
+                        if i < len(code_formats) - 1:
+                            continue  # Try next format
+                        else:
+                            return None
         except Exception as e:
             logger.error(f"Error submitting customer code: {e}")
             return None
