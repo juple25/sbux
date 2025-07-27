@@ -159,11 +159,20 @@ class StarbucksSurveyBot:
             
             action = form.get('action', '')
             
-            # Debug: Log all input fields to find correct field name
+            # Debug: Log page content to see what's actually there
+            logger.info(f"Page content length: {len(page_content)}")
+            logger.info(f"Page content preview: {page_content[:1000]}")
+            
+            # Debug: Log all input fields to find correct field name  
             input_fields = form.find_all('input')
             logger.info(f"Found {len(input_fields)} input fields:")
             for inp in input_fields:
                 logger.info(f"  Input: name='{inp.get('name')}', type='{inp.get('type')}', placeholder='{inp.get('placeholder')}'")
+            
+            # Also check for text areas and other input elements
+            textareas = form.find_all('textarea')
+            selects = form.find_all('select') 
+            logger.info(f"Found {len(textareas)} textareas and {len(selects)} selects")
             
             # Try multiple customer code formats
             code_formats = [
