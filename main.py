@@ -241,7 +241,14 @@ class StarbucksSurveyBot:
                 logger.error("No prompts data available")
                 return None
             
-            url = f"{self.base_url}/websurvey/2/responses"
+            # Try different possible endpoints
+            possible_endpoints = [
+                f"{self.base_url}/websurvey/2/submit",
+                f"{self.base_url}/websurvey/2/response", 
+                f"{self.base_url}/websurvey/2/answers",
+                f"{self.base_url}/websurvey/2/data",
+                f"{self.base_url}/websurvey/2/complete"
+            ]
             
             headers = {
                 'x-csrf-token': self.session_data.get('csrf_token', ''),
@@ -265,86 +272,91 @@ class StarbucksSurveyBot:
             
             logger.info(f"Will try customer code formats: {code_formats}")
             
-            for code_format in code_formats:
-                try:
-                    # Customer code response
-                    responses.append({
-                        "questionId": "customer_code",
-                        "responseValue": code_format,
-                        "responseType": "text"
-                    })
-                    
-                    # Rating questions - always answer 7 (Sangat Setuju)
-                    for i in range(1, 8):  # Assume 7 rating questions
+            for endpoint in possible_endpoints:
+                logger.info(f"Trying endpoint: {endpoint}")
+                
+                for code_format in code_formats:
+                    try:
+                        # Customer code response
+                        responses = [{
+                            "questionId": "customer_code",
+                            "responseValue": code_format,
+                            "responseType": "text"
+                        }]
+                        
+                        # Rating questions - always answer 7 (Sangat Setuju)
+                        for i in range(1, 8):  # Assume 7 rating questions
+                            responses.append({
+                                "questionId": f"rating_{i}",
+                                "responseValue": "7",
+                                "responseType": "scale"
+                            })
+                        
+                        # Visit type
                         responses.append({
-                            "questionId": f"rating_{i}",
-                            "responseValue": "7",
-                            "responseType": "scale"
+                            "questionId": "visit_type",
+                            "responseValue": "direct",
+                            "responseType": "select"
                         })
-                    
-                    # Visit type
-                    responses.append({
-                        "questionId": "visit_type",
-                        "responseValue": "direct",
-                        "responseType": "select"
-                    })
-                    
-                    # Return visit
-                    responses.append({
-                        "questionId": "return_visit",
-                        "responseValue": "yes",
-                        "responseType": "select"
-                    })
-                    
-                    # Visit day
-                    responses.append({
-                        "questionId": "visit_day",
-                        "responseValue": "today",
-                        "responseType": "select"
-                    })
-                    
-                    # Message
-                    responses.append({
-                        "questionId": "message",
-                        "responseValue": message,
-                        "responseType": "textarea"
-                    })
-                    
-                    payload = {
-                        "survey": {
-                            "id": "5020"
-                        },
-                        "session": {
-                            "id": self.session_data.get('s2_param', '')
-                        },
-                        "responses": responses,
-                        "language": "id"
-                    }
-                    
-                    logger.info(f"Attempting to submit responses with customer code format: {code_format}")
-                    logger.info(f"Payload: {json.dumps(payload, indent=2)[:1000]}...")
-                    
-                    async with session.post(url, headers=headers, json=payload) as response:
-                        response_text = await response.text()
-                        if response.status == 200:
-                            try:
-                                data = json.loads(response_text)
-                                if data.get('success') or 'error' not in response_text.lower():
-                                    logger.info(f"Survey responses submitted successfully with format: {code_format}")
-                                    return data
-                                else:
-                                    logger.warning(f"Response rejected for format: {code_format}")
-                                    continue
-                            except json.JSONDecodeError:
-                                logger.info(f"Survey submitted successfully with format: {code_format}")
-                                return {"success": True, "response": response_text}
-                        else:
-                            logger.warning(f"Failed to submit with format {code_format}: {response.status}")
-                            continue
-                            
-                except Exception as e:
-                    logger.warning(f"Error with format {code_format}: {e}")
-                    continue
+                        
+                        # Return visit
+                        responses.append({
+                            "questionId": "return_visit",
+                            "responseValue": "yes",
+                            "responseType": "select"
+                        })
+                        
+                        # Visit day
+                        responses.append({
+                            "questionId": "visit_day",
+                            "responseValue": "today",
+                            "responseType": "select"
+                        })
+                        
+                        # Message
+                        responses.append({
+                            "questionId": "message",
+                            "responseValue": message,
+                            "responseType": "textarea"
+                        })
+                        
+                        payload = {
+                            "survey": {
+                                "id": "5020"
+                            },
+                            "session": {
+                                "id": self.session_data.get('s2_param', '')
+                            },
+                            "responses": responses,
+                            "language": "id"
+                        }
+                        
+                        logger.info(f"Trying endpoint {endpoint} with customer code format: {code_format}")
+                        
+                        async with session.post(endpoint, headers=headers, json=payload) as response:
+                            response_text = await response.text()
+                            if response.status == 200:
+                                try:
+                                    data = json.loads(response_text)
+                                    if data.get('success') or 'error' not in response_text.lower():
+                                        logger.info(f"SUCCESS! Endpoint {endpoint} worked with format: {code_format}")
+                                        return data
+                                    else:
+                                        logger.warning(f"Response rejected for format: {code_format}")
+                                        continue
+                                except json.JSONDecodeError:
+                                    logger.info(f"SUCCESS! Endpoint {endpoint} worked with format: {code_format}")
+                                    return {"success": True, "response": response_text}
+                            elif response.status == 404:
+                                logger.warning(f"Endpoint {endpoint} not found (404)")
+                                break  # Try next endpoint
+                            else:
+                                logger.warning(f"Failed to submit with format {code_format} to {endpoint}: {response.status}")
+                                continue
+                                
+                    except Exception as e:
+                        logger.warning(f"Error with format {code_format} at {endpoint}: {e}")
+                        continue
             
             logger.error("All customer code formats failed")
             return None
