@@ -10,6 +10,8 @@ import re
 import uuid
 import json
 import base64
+import random
+import time
 
 # Setup logging
 logging.basicConfig(
@@ -51,16 +53,51 @@ class StarbucksSurveyBot:
         return str(uuid.uuid4())
 
     def extract_session_from_url(self, survey_url):
-        """Extract session parameters from survey URL"""
+        """Extract session parameters from survey URL with improved parsing"""
         try:
-            parsed = urlparse(survey_url)
-            params = parse_qs(parsed.query)
+            # Handle URL with parentheses in query parameters
+            if '(' in survey_url and ')' in survey_url:
+                # Extract content between parentheses
+                start = survey_url.find('(') + 1
+                end = survey_url.find(')')
+                params_str = survey_url[start:end]
+                
+                # Parse individual parameters
+                g_param = None
+                s2_param = None
+                
+                if '&' in params_str:
+                    parts = params_str.split('&')
+                    for part in parts:
+                        if '_g=' in part:
+                            g_param = part.split('_g=')[1] if '_g=' in part else part[3:]
+                        elif '_s2=' in part:
+                            s2_param = part.split('_s2=')[1] if '_s2=' in part else part[4:]
+                        elif part.startswith('NTAy'):  # Handle case where _g= is missing
+                            g_param = part
+                else:
+                    # Single parameter case
+                    if '_g=' in params_str:
+                        g_param = params_str.split('_g=')[1]
+                    elif '_s2=' in params_str:
+                        s2_param = params_str.split('_s2=')[1]
+            else:
+                # Standard URL parsing
+                parsed = urlparse(survey_url)
+                params = parse_qs(parsed.query)
+                
+                g_param = params.get('_g', [None])[0]
+                s2_param = params.get('_s2', [None])[0]
             
-            g_param = params.get('_g', [None])[0]
-            s2_param = params.get('_s2', [None])[0]
+            # URL decode if needed
+            if g_param:
+                g_param = unquote(g_param)
+            if s2_param:
+                s2_param = unquote(s2_param)
             
             logger.info(f"Extracted _g: {g_param}, _s2: {s2_param}")
             return g_param, s2_param
+            
         except Exception as e:
             logger.error(f"Error extracting session from URL: {e}")
             return None, None
@@ -160,9 +197,14 @@ class StarbucksSurveyBot:
         try:
             url = f"{self.base_url}/websurvey/2/sendStarted"
             
+            # Use dynamic g_param instead of hardcoded value
+            g_id = self.session_data.get('g_param', 'NTAyMA==h')
+            if not g_id.endswith('h'):
+                g_id += 'h'
+            
             headers = {
                 'x-csrf-token': self.session_data.get('csrf_token', ''),
-                'x-im-g-id': 'NTAyMA==h',
+                'x-im-g-id': g_id,
                 'x-session-token-2': self.session_data.get('s2_param', ''),
                 'referer': self.session_data.get('referer', ''),
                 'origin': self.base_url,
@@ -241,32 +283,30 @@ class StarbucksSurveyBot:
                 logger.error("No prompts data available")
                 return None
             
-            # Try different possible endpoints based on common survey API patterns
-            possible_endpoints = [
+            # Add delay before starting submission attempts
+            await asyncio.sleep(random.uniform(3, 6))
+            
+            # Prioritized endpoints - try most common ones first
+            priority_endpoints = [
                 f"{self.base_url}/websurvey/2/submit",
-                f"{self.base_url}/websurvey/2/response", 
-                f"{self.base_url}/websurvey/2/answers",
-                f"{self.base_url}/websurvey/2/data",
-                f"{self.base_url}/websurvey/2/complete",
-                f"{self.base_url}/websurvey/2/submitResponse",
-                f"{self.base_url}/websurvey/2/submitResponses",
-                f"{self.base_url}/websurvey/2/saveResponse",
-                f"{self.base_url}/websurvey/2/saveResponses",
-                f"{self.base_url}/websurvey/2/survey/submit",
-                f"{self.base_url}/websurvey/2/survey/response",
-                f"{self.base_url}/websurvey/2/collect",
-                f"{self.base_url}/websurvey/2/send",
-                f"{self.base_url}/websurvey/servlet/SubmitServlet",
-                f"{self.base_url}/websurvey/servlet/ResponseServlet",
-                f"{self.base_url}/websurvey/2/ajax/submit",
-                f"{self.base_url}/websurvey/2/api/submit",
                 f"{self.base_url}/websurvey/2/next",
                 f"{self.base_url}/websurvey/2/continue"
             ]
             
+            # Fallback endpoints - only if priority fails
+            fallback_endpoints = [
+                f"{self.base_url}/websurvey/2/response",
+                f"{self.base_url}/websurvey/2/complete"
+            ]
+            
+            # Use dynamic g_param instead of hardcoded value
+            g_id = self.session_data.get('g_param', 'NTAyMA==h')
+            if not g_id.endswith('h'):
+                g_id += 'h'
+            
             headers = {
                 'x-csrf-token': self.session_data.get('csrf_token', ''),
-                'x-im-g-id': 'NTAyMA==h',
+                'x-im-g-id': g_id,
                 'x-session-token-2': self.session_data.get('s2_param', ''),
                 'referer': self.session_data.get('referer', ''),
                 'origin': self.base_url,
@@ -277,93 +317,43 @@ class StarbucksSurveyBot:
             # Build responses based on prompts
             responses = []
             
-            # Try multiple customer code formats
-            code_formats = [
-                customer_code.replace(' ', ''),  # No space
-                customer_code,  # Original
-                f"{customer_code[:5]} {customer_code[5:]}".replace('  ', ' ').strip(),  # With space
-            ]
+            # Try smart customer code formats
+            smart_code_formats = self.get_smart_code_formats(customer_code)
+            logger.info(f"Will try customer code formats: {smart_code_formats}")
             
-            logger.info(f"Will try customer code formats: {code_formats}")
-            
-            for endpoint in possible_endpoints:
-                logger.info(f"Trying endpoint: {endpoint}")
+            # First try priority endpoints
+            for endpoint in priority_endpoints:
+                logger.info(f"Trying priority endpoint: {endpoint}")
                 
-                for code_format in code_formats:
+                for code_format in smart_code_formats:
+                    # Add delay between attempts
+                    await asyncio.sleep(random.uniform(2, 4))
+                    
                     try:
-                        # Customer code response
-                        responses = [{
-                            "questionId": "customer_code",
-                            "responseValue": code_format,
-                            "responseType": "text"
-                        }]
-                        
-                        # Rating questions - always answer 7 (Sangat Setuju)
-                        for i in range(1, 8):  # Assume 7 rating questions
-                            responses.append({
-                                "questionId": f"rating_{i}",
-                                "responseValue": "7",
-                                "responseType": "scale"
-                            })
-                        
-                        # Visit type
-                        responses.append({
-                            "questionId": "visit_type",
-                            "responseValue": "direct",
-                            "responseType": "select"
-                        })
-                        
-                        # Return visit
-                        responses.append({
-                            "questionId": "return_visit",
-                            "responseValue": "yes",
-                            "responseType": "select"
-                        })
-                        
-                        # Visit day
-                        responses.append({
-                            "questionId": "visit_day",
-                            "responseValue": "today",
-                            "responseType": "select"
-                        })
-                        
-                        # Message
-                        responses.append({
-                            "questionId": "message",
-                            "responseValue": message,
-                            "responseType": "textarea"
-                        })
-                        
-                        payload = {
-                            "survey": {
-                                "id": "5020"
-                            },
-                            "session": {
-                                "id": self.session_data.get('s2_param', '')
-                            },
-                            "responses": responses,
-                            "language": "id"
-                        }
+                        payload = self.build_survey_payload(code_format, message)
                         
                         logger.info(f"Trying endpoint {endpoint} with customer code format: {code_format}")
                         
                         async with session.post(endpoint, headers=headers, json=payload) as response:
                             response_text = await response.text()
                             if response.status == 200:
-                                try:
-                                    data = json.loads(response_text)
-                                    if data.get('success') or 'error' not in response_text.lower():
-                                        logger.info(f"SUCCESS! Endpoint {endpoint} worked with format: {code_format}")
-                                        return data
-                                    else:
-                                        logger.warning(f"Response rejected for format: {code_format}")
-                                        continue
-                                except json.JSONDecodeError:
+                                if self.is_successful_response(response_text):
                                     logger.info(f"SUCCESS! Endpoint {endpoint} worked with format: {code_format}")
-                                    return {"success": True, "response": response_text}
+                                    try:
+                                        data = json.loads(response_text)
+                                        return data
+                                    except json.JSONDecodeError:
+                                        return {"success": True, "response": response_text}
+                                else:
+                                    logger.warning(f"Response rejected for format: {code_format}")
+                                    continue
                             elif response.status == 404:
                                 logger.warning(f"Endpoint {endpoint} not found (404)")
                                 break  # Try next endpoint
+                            elif response.status == 429:
+                                logger.warning(f"Rate limited, waiting...")
+                                await asyncio.sleep(random.uniform(10, 20))
+                                continue
                             else:
                                 logger.warning(f"Failed to submit with format {code_format} to {endpoint}: {response.status}")
                                 continue
@@ -372,12 +362,182 @@ class StarbucksSurveyBot:
                         logger.warning(f"Error with format {code_format} at {endpoint}: {e}")
                         continue
             
-            logger.error("All customer code formats failed")
+            # If priority endpoints fail, try fallback with longer delay
+            logger.info("Priority endpoints failed, trying fallback endpoints...")
+            await asyncio.sleep(random.uniform(10, 15))
+            
+            for endpoint in fallback_endpoints:
+                logger.info(f"Trying fallback endpoint: {endpoint}")
+                
+                for code_format in smart_code_formats:
+                    # Longer delay for fallback endpoints
+                    await asyncio.sleep(random.uniform(5, 8))
+                    
+                    try:
+                        payload = self.build_survey_payload(code_format, message)
+                        
+                        logger.info(f"Trying fallback endpoint {endpoint} with customer code format: {code_format}")
+                        
+                        async with session.post(endpoint, headers=headers, json=payload) as response:
+                            response_text = await response.text()
+                            if response.status == 200:
+                                if self.is_successful_response(response_text):
+                                    logger.info(f"SUCCESS! Fallback endpoint {endpoint} worked with format: {code_format}")
+                                    try:
+                                        data = json.loads(response_text)
+                                        return data
+                                    except json.JSONDecodeError:
+                                        return {"success": True, "response": response_text}
+                                else:
+                                    logger.warning(f"Fallback response rejected for format: {code_format}")
+                                    continue
+                            elif response.status == 404:
+                                logger.warning(f"Fallback endpoint {endpoint} not found (404)")
+                                break  # Try next endpoint
+                            elif response.status == 429:
+                                logger.warning(f"Rate limited on fallback, waiting...")
+                                await asyncio.sleep(random.uniform(20, 30))
+                                continue
+                            else:
+                                logger.warning(f"Fallback failed with format {code_format} to {endpoint}: {response.status}")
+                                continue
+                                
+                    except Exception as e:
+                        logger.warning(f"Error with fallback format {code_format} at {endpoint}: {e}")
+                        continue
+            
+            logger.error("All endpoints and customer code formats failed")
             return None
             
         except Exception as e:
             logger.error(f"Error submitting survey responses: {e}")
             return None
+
+    def get_smart_code_formats(self, customer_code):
+        """Generate smart customer code formats based on common patterns"""
+        formats = []
+        
+        # Clean the original code
+        clean_code = customer_code.replace(' ', '').replace('-', '').upper()
+        
+        # Add original format first
+        formats.append(customer_code)
+        
+        # Add cleaned format
+        if clean_code not in formats:
+            formats.append(clean_code)
+        
+        # Try common spacing patterns for Indonesian receipts
+        if len(clean_code) >= 10:
+            # Pattern: XXXXX XXXXX
+            spaced = f"{clean_code[:5]} {clean_code[5:]}"
+            if spaced not in formats:
+                formats.append(spaced)
+        
+        return formats[:3]  # Limit to 3 formats to avoid rate limiting
+        
+    def build_survey_payload(self, customer_code, message):
+        """Build comprehensive survey payload"""
+        responses = []
+        
+        # Customer code response
+        responses.append({
+            "questionId": "customer_code",
+            "responseValue": customer_code,
+            "responseType": "text"
+        })
+        
+        # Rating questions - always answer 7 (Sangat Setuju)
+        rating_questions = [
+            "overall_satisfaction", "food_quality", "service_speed", 
+            "staff_friendliness", "cleanliness", "value_for_money", "atmosphere"
+        ]
+        
+        for i, question in enumerate(rating_questions, 1):
+            responses.append({
+                "questionId": f"rating_{i}",
+                "responseValue": "7",
+                "responseType": "scale",
+                "questionName": question
+            })
+        
+        # Visit details
+        responses.extend([
+            {
+                "questionId": "visit_type",
+                "responseValue": "dine_in",
+                "responseType": "select"
+            },
+            {
+                "questionId": "return_visit",
+                "responseValue": "yes",
+                "responseType": "select"
+            },
+            {
+                "questionId": "visit_day",
+                "responseValue": "today",
+                "responseType": "select"
+            },
+            {
+                "questionId": "recommendation",
+                "responseValue": "yes", 
+                "responseType": "select"
+            }
+        ])
+        
+        # Message
+        responses.append({
+            "questionId": "feedback_message",
+            "responseValue": message,
+            "responseType": "textarea"
+        })
+        
+        return {
+            "survey": {
+                "id": "5020"
+            },
+            "session": {
+                "id": self.session_data.get('s2_param', '')
+            },
+            "responses": responses,
+            "language": "id",
+            "completed": True,
+            "submitTime": time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime())
+        }
+        
+    def is_successful_response(self, response_text):
+        """Check if response indicates success"""        
+        # Check response text for success indicators
+        if isinstance(response_text, str):
+            success_patterns = [
+                r'success.*true',
+                r'completed.*true', 
+                r'submitted.*successfully',
+                r'thank.*you',
+                r'promo.*code',
+                r'survey.*complete',
+                r'terima.*kasih'
+            ]
+            
+            for pattern in success_patterns:
+                if re.search(pattern, response_text, re.IGNORECASE):
+                    return True
+                    
+            # Check for error indicators
+            error_patterns = [
+                r'error.*true',
+                r'invalid.*code',
+                r'expired.*session',
+                r'unauthorized',
+                r'gagal'
+            ]
+            
+            for pattern in error_patterns:
+                if re.search(pattern, response_text, re.IGNORECASE):
+                    return False
+                    
+        # If no clear indicators, assume success for 200 status
+        return True
 
     async def extract_promo_code(self, response_data):
         """Extract promo code from survey response"""
