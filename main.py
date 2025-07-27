@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import asyncio
 from urllib.parse import unquote, quote
 import re
+import uuid
 
 # Setup logging
 logging.basicConfig(
@@ -37,10 +38,16 @@ class StarbucksSurveyBot:
         """Create aiohttp session with headers"""
         return aiohttp.ClientSession(headers=self.headers)
 
+    def generate_session_id(self):
+        """Generate new session ID"""
+        return str(uuid.uuid4())
+
     async def get_initial_page(self, session):
-        """Get initial survey page"""
+        """Get initial survey page with auto-generated session ID"""
         try:
-            url = f"{self.base_url}/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2=7e892124-f2b8-4823-8088-a5f0eb4afc44#!/1"
+            session_id = self.generate_session_id()
+            url = f"{self.base_url}/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2={session_id}#!/1"
+            logger.info(f"Generated new session ID: {session_id}")
             async with session.get(url) as response:
                 if response.status == 200:
                     return await response.text()
