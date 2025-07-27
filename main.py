@@ -50,6 +50,7 @@ class StarbucksSurveyBot:
             url = f"{self.base_url}/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2={session_id}&language=id#!/2"
             logger.info(f"Generated new session ID: {session_id}")
             logger.info(f"Trying URL with Indonesian language: {url}")
+            logger.info(f"=== URL FOR MANUAL TEST: {url} ===")  # Easy to find in logs
             
             async with session.get(url) as response:
                 response_text = await response.text()
