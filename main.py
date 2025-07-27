@@ -407,17 +407,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_sessions[user_id] = {}
     
     await update.message.reply_text(
-        "🌟 *Selamat datang di Starbucks Survey Bot!*\n\n"
+        "🌟 Selamat datang di Starbucks Survey Bot!\n\n"
         "Bot ini akan membantu Anda mengisi survey Starbucks secara otomatis.\n\n"
-        "📝 *Cara penggunaan:*\n"
+        "📝 Cara penggunaan:\n"
         "1. Kirimkan URL survey dari receipt QR code\n"
         "2. Kirimkan kode pelanggan Anda\n"
         "3. Kirimkan pesan untuk survey\n"
         "4. Bot akan mengisi survey otomatis\n"
         "5. Dapatkan konfirmasi survey selesai!\n\n"
         "Silakan kirimkan URL survey dari QR code receipt Anda:\n"
-        "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...)",
-        parse_mode='Markdown'
+        "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...)"
     )
     
     return WAITING_URL
