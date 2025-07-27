@@ -65,25 +65,68 @@ class StarbucksSurveyBot:
             soup = BeautifulSoup(page_content, 'html.parser')
             form = soup.find('form')
             if not form:
+                logger.error("No form found on language page")
+                logger.info(f"Language page content: {page_content[:1000]}")
                 return None
+            
+            # Debug: Log form details
+            logger.info(f"Language form action: {form.get('action', '')}")
+            
+            # Look for language selection elements
+            select_elements = form.find_all('select')
+            radio_elements = form.find_all('input', type='radio')
+            
+            logger.info(f"Found {len(select_elements)} select elements and {len(radio_elements)} radio elements")
             
             # Extract form action and data
             action = form.get('action', '')
-            form_data = {
-                'language': 'id',  # Indonesian
-                '_submit': 'Continue'
-            }
+            form_data = {}
+            
+            # Check for language dropdown
+            for select in select_elements:
+                name = select.get('name', '')
+                if 'language' in name.lower() or 'lang' in name.lower():
+                    form_data[name] = 'id'  # Indonesian
+                    logger.info(f"Set language field '{name}' to 'id'")
+            
+            # Check for language radio buttons
+            for radio in radio_elements:
+                value = radio.get('value', '')
+                if value == 'id' or 'indo' in value.lower():
+                    form_data[radio.get('name', '')] = value
+                    logger.info(f"Set radio field '{radio.get('name')}' to '{value}'")
+            
+            # Fallback to default language field
+            if not any('language' in key.lower() or 'lang' in key.lower() for key in form_data.keys()):
+                form_data['language'] = 'id'
+            
+            # Add submit button value
+            submit_buttons = form.find_all('input', type='submit') + form.find_all('button', type='submit')
+            for submit in submit_buttons:
+                value = submit.get('value', submit.get_text(strip=True))
+                if value:
+                    form_data['_submit'] = value
+                    break
+            else:
+                form_data['_submit'] = 'Continue'
             
             # Add hidden fields
             for hidden in form.find_all('input', type='hidden'):
                 form_data[hidden.get('name', '')] = hidden.get('value', '')
             
+            logger.info(f"Language form data: {form_data}")
+            
             # Submit form
             async with session.post(f"{self.base_url}{action}", data=form_data) as response:
+                response_text = await response.text()
                 if response.status == 200:
-                    return await response.text()
+                    logger.info(f"Language submission successful, response length: {len(response_text)}")
+                    # Log first part of response to debug
+                    logger.info(f"Response preview: {response_text[:500]}")
+                    return response_text
                 else:
                     logger.error(f"Failed to submit language: {response.status}")
+                    logger.error(f"Response: {response_text[:500]}")
                     return None
         except Exception as e:
             logger.error(f"Error submitting language: {e}")
