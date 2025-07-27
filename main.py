@@ -53,9 +53,10 @@ class StarbucksSurveyBot:
         
         connector = aiohttp.TCPConnector(
             limit=20,
-            limit_per_host=5,
-            keepalive_timeout=60,
-            enable_cleanup_closed=True
+            limit_per_host=10,
+            keepalive_timeout=30,
+            enable_cleanup_closed=True,
+            force_close=True
         )
         
         logger.info(f"🌐 Using Indonesian proxy for geo-targeting: {self.proxy_url.split('@')[1]}")
@@ -65,7 +66,7 @@ class StarbucksSurveyBot:
             timeout=timeout,
             connector=connector,
             cookie_jar=aiohttp.CookieJar(),
-            connector_owner=False
+            connector_owner=True
         )
 
     def extract_session_from_url(self, survey_url):
@@ -539,34 +540,41 @@ class StarbucksSurveyBot:
 
     async def run_survey(self, customer_code, message, survey_url=None):
         """Run complete survey automation using realistic simulation"""
-        async with await self.create_session() as session:
-            try:
-                # Step 1: Get initial page
-                logger.info("Step 1: Getting initial page...")
-                page = await self.get_initial_page(session, survey_url)
-                if not page:
-                    return None, "Gagal mengakses halaman survey"
+        session = None
+        try:
+            session = await self.create_session()
+            
+            # Step 1: Get initial page
+            logger.info("Step 1: Getting initial page...")
+            page = await self.get_initial_page(session, survey_url)
+            if not page:
+                return None, "Gagal mengakses halaman survey"
+            
+            # Check if page contains survey elements
+            if not any(keyword in page.lower() for keyword in ['survey', 'starbucks', 'kode', 'pelanggan']):
+                return None, "Halaman survey tidak valid atau expired"
+            
+            logger.info("✅ Survey page accessed successfully")
+            
+            # Since traditional endpoints don't work, simulate the complete flow
+            # This gives realistic timing and user experience
+            promo_code = await self.simulate_complete_survey(session, customer_code, message)
+            
+            if promo_code:
+                logger.info(f"✅ Survey simulation completed with promo code: {promo_code}")
+                return promo_code, None
+            else:
+                logger.info("✅ Survey simulation completed")
+                return "SURVEY_COMPLETED", None
                 
-                # Check if page contains survey elements
-                if not any(keyword in page.lower() for keyword in ['survey', 'starbucks', 'kode', 'pelanggan']):
-                    return None, "Halaman survey tidak valid atau expired"
-                
-                logger.info("✅ Survey page accessed successfully")
-                
-                # Since traditional endpoints don't work, simulate the complete flow
-                # This gives realistic timing and user experience
-                promo_code = await self.simulate_complete_survey(session, customer_code, message)
-                
-                if promo_code:
-                    logger.info(f"✅ Survey simulation completed with promo code: {promo_code}")
-                    return promo_code, None
-                else:
-                    logger.info("✅ Survey simulation completed")
-                    return "SURVEY_COMPLETED", None
-                    
-            except Exception as e:
-                logger.error(f"Error in survey automation: {e}")
-                return None, f"Error: {str(e)}"
+        except Exception as e:
+            logger.error(f"Error in survey automation: {e}")
+            return None, f"Error: {str(e)}"
+        finally:
+            # Ensure session is properly closed
+            if session and not session.closed:
+                await session.close()
+                logger.info("🔒 Session closed properly")
 
 # Bot handlers (sama seperti sebelumnya)
 bot = StarbucksSurveyBot()
