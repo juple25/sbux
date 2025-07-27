@@ -241,13 +241,27 @@ class StarbucksSurveyBot:
                 logger.error("No prompts data available")
                 return None
             
-            # Try different possible endpoints
+            # Try different possible endpoints based on common survey API patterns
             possible_endpoints = [
                 f"{self.base_url}/websurvey/2/submit",
                 f"{self.base_url}/websurvey/2/response", 
                 f"{self.base_url}/websurvey/2/answers",
                 f"{self.base_url}/websurvey/2/data",
-                f"{self.base_url}/websurvey/2/complete"
+                f"{self.base_url}/websurvey/2/complete",
+                f"{self.base_url}/websurvey/2/submitResponse",
+                f"{self.base_url}/websurvey/2/submitResponses",
+                f"{self.base_url}/websurvey/2/saveResponse",
+                f"{self.base_url}/websurvey/2/saveResponses",
+                f"{self.base_url}/websurvey/2/survey/submit",
+                f"{self.base_url}/websurvey/2/survey/response",
+                f"{self.base_url}/websurvey/2/collect",
+                f"{self.base_url}/websurvey/2/send",
+                f"{self.base_url}/websurvey/servlet/SubmitServlet",
+                f"{self.base_url}/websurvey/servlet/ResponseServlet",
+                f"{self.base_url}/websurvey/2/ajax/submit",
+                f"{self.base_url}/websurvey/2/api/submit",
+                f"{self.base_url}/websurvey/2/next",
+                f"{self.base_url}/websurvey/2/continue"
             ]
             
             headers = {
