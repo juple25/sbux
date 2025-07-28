@@ -538,23 +538,38 @@ class StarbucksSurveyBot:
         logger.info(f"🎁 Generated 5-digit promo code: {promo_code}")
         return promo_code
 
-    def generate_customer_code(self, store_id="16644", base_date="0727"):
-        """Generate realistic customer code based on discovered pattern"""
+    def generate_customer_code(self, store_id="16644"):
+        """Generate realistic customer code with dynamic date (7 days back range)"""
         import random
+        from datetime import datetime, timedelta
         
-        # Pattern: 16644 08(XX)0727(YY)16
+        # Pattern: 16644 08(XX)MMDD(YY)16
         # Fixed parts
         prefix = "08"
         suffix = "16"
+        
+        # Generate random date within last 7 days
+        today = datetime.now()
+        days_back = random.randint(0, 7)  # 0-7 days ago
+        selected_date = today - timedelta(days=days_back)
+        
+        # Format date as MMDD
+        month = f"{selected_date.month:02d}"
+        day = f"{selected_date.day:02d}"
+        date_str = f"{month}{day}"
         
         # Generate variable parts
         xx = random.randint(10, 99)  # 2 digit random: 10-99
         yy = random.randint(1, 99)   # 2 digit random: 01-99
         
         # Construct customer code
-        customer_code = f"{store_id} {prefix}{xx:02d}{base_date}{yy:02d}{suffix}"
+        customer_code = f"{store_id} {prefix}{xx:02d}{date_str}{yy:02d}{suffix}"
         
+        # Log with date info
+        date_info = selected_date.strftime("%d %B %Y")
         logger.info(f"🎲 Generated customer code: {customer_code}")
+        logger.info(f"📅 Generated for date: {date_info} ({days_back} days ago)")
+        
         return customer_code
 
     async def run_survey(self, customer_code, message, survey_url=None):
@@ -606,13 +621,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "🌟 Selamat datang di Starbucks Survey Bot!\n\n"
         "Bot ini akan membantu Anda mengisi survey Starbucks secara otomatis.\n\n"
-        "🆕 FITUR BARU: Customer Code Generator!\n"
-        "Sekarang bisa generate kode pelanggan otomatis!\n\n"
+        "🆕 FITUR TERBARU: Smart Customer Code Generator!\n"
+        "• Generate kode otomatis dengan tanggal dinamis\n"
+        "• Random date dalam 7 hari terakhir\n"
+        "• Pattern berdasarkan receipt yang berhasil\n\n"
         "📝 Cara penggunaan:\n"
         "1. Kirimkan URL survey dari receipt QR code\n"
-        "2. Input kode pelanggan (manual/generate)\n"
+        "2. Pilih kode pelanggan (manual/auto-generate)\n"
         "3. Kirimkan pesan untuk survey\n"
-        "4. Bot akan mengisi survey otomatis\n"
+        "4. Bot mengisi survey otomatis (rating 7 semua)\n"
         "5. Dapatkan promo code 5 digit!\n\n"
         "Silakan kirimkan URL survey dari QR code receipt Anda:\n"
         "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...)"
@@ -672,13 +689,31 @@ async def customer_code_callback(update: Update, context: ContextTypes.DEFAULT_T
         user_sessions[user_id]['customer_code'] = generated_code
         user_sessions[user_id]['code_method'] = 'generated'
         
+        # Extract date info for display
+        from datetime import datetime, timedelta
+        date_part = generated_code[10:14]  # MMDD part
+        month = int(date_part[:2])
+        day = int(date_part[2:])
+        
+        # Create date object for this year
+        try:
+            generated_date = datetime(datetime.now().year, month, day)
+            date_display = generated_date.strftime("%d %B %Y")
+        except:
+            date_display = f"Month {month}, Day {day}"
+        
         await query.edit_message_text(
             f"🎲 Kode Otomatis Berhasil Di-Generate!\n\n"
             f"🔢 Generated Code: {generated_code}\n\n"
-            f"Kode ini dibuat berdasarkan pattern yang berhasil dari store 16644.\n\n"
-            f"💡 Pattern: 16644 08(XX)0727(YY)16\n"
-            f"• XX = {generated_code[8:10]} (random)\n"
-            f"• YY = {generated_code[14:16]} (random)\n\n"
+            f"📅 Generated Date: {date_display}\n"
+            f"🏪 Store ID: 16644\n\n"
+            f"💡 Pattern Breakdown:\n"
+            f"• Store: {generated_code[:5]}\n"
+            f"• Prefix: {generated_code[6:8]}\n"
+            f"• Random: {generated_code[8:10]}\n"
+            f"• Date: {date_part} ({date_display})\n"
+            f"• Random: {generated_code[14:16]}\n"
+            f"• Suffix: {generated_code[16:18]}\n\n"
             f"Sekarang kirimkan pesan untuk survey:"
         )
         return WAITING_MESSAGE
