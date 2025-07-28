@@ -14,18 +14,6 @@ import random
 import time
 import hashlib
 
-# QR Code scanning dependencies
-try:
-    from pyzbar import pyzbar
-    from PIL import Image
-    import cv2
-    import numpy as np
-    QR_SCAN_AVAILABLE = True
-    logger.info("📸 QR code scanning available")
-except ImportError as e:
-    QR_SCAN_AVAILABLE = False
-    logger.warning(f"📸 QR code scanning not available: {e}")
-
 # Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -551,81 +539,6 @@ class StarbucksSurveyBot:
         logger.info(f"🎁 Generated 5-digit promo code: {promo_code}")
         return promo_code
 
-    async def scan_qr_from_image(self, image_path):
-        """Scan QR code dari gambar receipt"""
-        if not QR_SCAN_AVAILABLE:
-            return None, "QR code scanning tidak tersedia"
-        
-        try:
-            logger.info(f"📸 Scanning QR code from image: {image_path}")
-            
-            # Method 1: Try with PIL first (simpler)
-            try:
-                image = Image.open(image_path)
-                # Convert to RGB if necessary
-                if image.mode != 'RGB':
-                    image = image.convert('RGB')
-                
-                decoded_objects = pyzbar.decode(image)
-                
-                for obj in decoded_objects:
-                    data = obj.data.decode('utf-8')
-                    logger.info(f"📱 QR code found (PIL): {data}")
-                    
-                    if 'mystarbucksvisit.com' in data:
-                        return data, None
-                        
-            except Exception as e:
-                logger.warning(f"PIL method failed: {e}")
-            
-            # Method 2: Try with OpenCV (more robust)
-            try:
-                image = cv2.imread(image_path)
-                if image is None:
-                    return None, "Tidak bisa membaca gambar"
-                
-                # Convert BGR to RGB
-                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                
-                decoded_objects = pyzbar.decode(image_rgb)
-                
-                for obj in decoded_objects:
-                    data = obj.data.decode('utf-8')
-                    logger.info(f"📱 QR code found (OpenCV): {data}")
-                    
-                    if 'mystarbucksvisit.com' in data:
-                        return data, None
-                        
-            except Exception as e:
-                logger.warning(f"OpenCV method failed: {e}")
-            
-            # Method 3: Try with image preprocessing
-            try:
-                image = cv2.imread(image_path)
-                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-                
-                # Apply some preprocessing to improve detection
-                gray = cv2.GaussianBlur(gray, (5, 5), 0)
-                
-                decoded_objects = pyzbar.decode(gray)
-                
-                for obj in decoded_objects:
-                    data = obj.data.decode('utf-8')
-                    logger.info(f"📱 QR code found (Preprocessed): {data}")
-                    
-                    if 'mystarbucksvisit.com' in data:
-                        return data, None
-                        
-            except Exception as e:
-                logger.warning(f"Preprocessing method failed: {e}")
-            
-            logger.warning("❌ No Starbucks survey QR code found in image")
-            return None, "QR code Starbucks survey tidak ditemukan di gambar"
-            
-        except Exception as e:
-            logger.error(f"Error scanning QR code: {e}")
-            return None, f"Error scanning QR code: {str(e)}"
-
     async def run_survey(self, customer_code, message, survey_url=None):
         """Run complete survey automation using realistic simulation"""
         session = None
@@ -672,170 +585,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     user_sessions[user_id] = {}
     
-    # Create inline keyboard for options
-    keyboard = [
-        [InlineKeyboardButton("📝 Input URL Manual", callback_data="input_url")],
-        [InlineKeyboardButton("📸 Scan QR Code dari Foto", callback_data="scan_qr")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    qr_feature_text = ""
-    if QR_SCAN_AVAILABLE:
-        qr_feature_text = "📸 **FITUR BARU**: Scan QR code dari foto receipt!\n\n"
-    
     await update.message.reply_text(
-        f"🌟 **Selamat datang di Starbucks Survey Bot!**\n\n"
-        f"Bot ini akan membantu Anda mengisi survey Starbucks secara otomatis.\n\n"
-        f"{qr_feature_text}"
-        f"📝 **Cara penggunaan:**\n"
-        f"1. Pilih metode input (URL manual atau scan foto)\n"
-        f"2. Kirimkan kode pelanggan Anda\n"
-        f"3. Kirimkan pesan untuk survey\n"
-        f"4. Bot akan mengisi survey otomatis\n"
-        f"5. Dapatkan konfirmasi dan promo code 5 digit!\n\n"
-        f"Pilih cara input URL survey:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        "🌟 Selamat datang di Starbucks Survey Bot!\n\n"
+        "Bot ini akan membantu Anda mengisi survey Starbucks secara otomatis.\n\n"
+        "📝 Cara penggunaan:\n"
+        "1. Kirimkan URL survey dari receipt QR code\n"
+        "2. Kirimkan kode pelanggan Anda\n"
+        "3. Kirimkan pesan untuk survey\n"
+        "4. Bot akan mengisi survey otomatis\n"
+        "5. Dapatkan konfirmasi survey selesai!\n\n"
+        "Silakan kirimkan URL survey dari QR code receipt Anda:\n"
+        "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...)"
     )
     
     return WAITING_URL
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle button callback for input method selection"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    
-    if query.data == "input_url":
-        await query.edit_message_text(
-            "📝 **Input URL Manual**\n\n"
-            "Silakan kirimkan URL survey dari QR code receipt Anda:\n"
-            "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...)",
-            parse_mode='Markdown'
-        )
-        user_sessions[user_id]['input_method'] = 'manual'
-        return WAITING_URL
-        
-    elif query.data == "scan_qr":
-        if not QR_SCAN_AVAILABLE:
-            await query.edit_message_text(
-                "❌ **QR Scanning Tidak Tersedia**\n\n"
-                "Fitur scan QR code tidak tersedia di server ini.\n"
-                "Silakan gunakan metode input URL manual.",
-                parse_mode='Markdown'
-            )
-            return WAITING_URL
-            
-        await query.edit_message_text(
-            "📸 **Scan QR Code dari Foto**\n\n"
-            "Silakan kirimkan foto receipt Starbucks yang berisi QR code survey.\n\n"
-            "💡 **Tips:**\n"
-            "• Pastikan QR code terlihat jelas\n"
-            "• Gunakan pencahayaan yang baik\n"
-            "• Foto tidak buram atau terpotong\n"
-            "• QR code tidak tertutup lipatan",
-            parse_mode='Markdown'
-        )
-        user_sessions[user_id]['input_method'] = 'photo'
-        return WAITING_URL
-
-async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle photo upload for QR scanning"""
-    user_id = update.effective_user.id
-    
-    if user_sessions.get(user_id, {}).get('input_method') != 'photo':
-        await update.message.reply_text(
-            "❌ Silakan pilih metode 'Scan QR Code dari Foto' terlebih dahulu dengan /start"
-        )
-        return WAITING_URL
-    
-    try:
-        # Send processing message
-        processing_msg = await update.message.reply_text(
-            "📸 Sedang memproses foto...\n"
-            "🔍 Mencari QR code survey Starbucks...\n"
-            "⏳ Mohon tunggu..."
-        )
-        
-        # Download photo
-        photo_file = await update.message.photo[-1].get_file()
-        photo_path = f"temp_qr_{user_id}.jpg"
-        await photo_file.download_to_drive(photo_path)
-        
-        # Scan QR code
-        survey_url, error = await bot.scan_qr_from_image(photo_path)
-        
-        # Clean up temp file
-        try:
-            os.remove(photo_path)
-        except:
-            pass
-        
-        # Delete processing message
-        await processing_msg.delete()
-        
-        if survey_url:
-            user_sessions[user_id]['survey_url'] = survey_url
-            
-            await update.message.reply_text(
-                f"✅ **QR Code Berhasil Discan!**\n\n"
-                f"📱 URL Survey: {survey_url[:50]}...\n\n"
-                f"Sekarang kirimkan kode pelanggan dari receipt:\n"
-                f"(contoh: 16644 086207270916)",
-                parse_mode='Markdown'
-            )
-            return WAITING_CODE
-        else:
-            await update.message.reply_text(
-                f"❌ **QR Code Tidak Ditemukan**\n\n"
-                f"Error: {error}\n\n"
-                f"💡 **Coba lagi dengan:**\n"
-                f"• Foto yang lebih jelas\n"
-                f"• Pencahayaan lebih baik\n"
-                f"• QR code tidak terpotong\n\n"
-                f"Atau gunakan /start untuk input URL manual.",
-                parse_mode='Markdown'
-            )
-            return WAITING_URL
-            
-    except Exception as e:
-        logger.error(f"Error processing photo: {e}")
-        await update.message.reply_text(
-            f"❌ Gagal memproses foto: {str(e)}\n\n"
-            f"Silakan coba lagi atau gunakan /start untuk input manual."
-        )
-        return WAITING_URL
-
 async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive survey URL (manual input)"""
+    """Receive survey URL"""
     user_id = update.effective_user.id
     survey_url = update.message.text.strip()
-    
-    # Check if user selected manual input method
-    if user_sessions.get(user_id, {}).get('input_method') != 'manual':
-        await update.message.reply_text(
-            "❌ Silakan pilih metode 'Input URL Manual' terlebih dahulu dengan /start"
-        )
-        return WAITING_URL
     
     # Validate URL
     if not survey_url.startswith('https://www.mystarbucksvisit.com'):
         await update.message.reply_text(
-            "❌ **URL Tidak Valid**\n\n"
-            "Silakan kirim URL dari QR code receipt Starbucks:\n"
-            "Format: `https://www.mystarbucksvisit.com/websurvey/...`",
-            parse_mode='Markdown'
+            "❌ URL tidak valid. Silakan kirim URL dari QR code receipt Starbucks:\n"
+            "Format: https://www.mystarbucksvisit.com/websurvey/..."
         )
         return WAITING_URL
     
     user_sessions[user_id]['survey_url'] = survey_url
     
     await update.message.reply_text(
-        "✅ **URL Survey Tersimpan**\n\n"
+        "✅ URL survey tersimpan\n\n"
         "Sekarang kirimkan kode pelanggan dari receipt:\n"
-        "(contoh: 16644 086207270916)",
-        parse_mode='Markdown'
+        "(contoh: 16644 086207270916)"
     )
     
     return WAITING_CODE
@@ -957,11 +740,7 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            WAITING_URL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url),
-                MessageHandler(filters.PHOTO, receive_photo),
-                CallbackQueryHandler(button_callback)
-            ],
+            WAITING_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)],
             WAITING_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code)],
             WAITING_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message)],
         },
