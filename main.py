@@ -538,6 +538,25 @@ class StarbucksSurveyBot:
         logger.info(f"🎁 Generated 5-digit promo code: {promo_code}")
         return promo_code
 
+    def generate_customer_code(self, store_id="16644", base_date="0727"):
+        """Generate realistic customer code based on discovered pattern"""
+        import random
+        
+        # Pattern: 16644 08(XX)0727(YY)16
+        # Fixed parts
+        prefix = "08"
+        suffix = "16"
+        
+        # Generate variable parts
+        xx = random.randint(10, 99)  # 2 digit random: 10-99
+        yy = random.randint(1, 99)   # 2 digit random: 01-99
+        
+        # Construct customer code
+        customer_code = f"{store_id} {prefix}{xx:02d}{base_date}{yy:02d}{suffix}"
+        
+        logger.info(f"🎲 Generated customer code: {customer_code}")
+        return customer_code
+
     async def run_survey(self, customer_code, message, survey_url=None):
         """Run complete survey automation using realistic simulation"""
         session = None
@@ -585,16 +604,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_sessions[user_id] = {}
     
     await update.message.reply_text(
-        "🌟 Selamat datang di Starbucks Survey Bot!\n\n"
+        "🌟 **Selamat datang di Starbucks Survey Bot!**\n\n"
         "Bot ini akan membantu Anda mengisi survey Starbucks secara otomatis.\n\n"
-        "📝 Cara penggunaan:\n"
+        "🆕 **FITUR BARU: Customer Code Generator!**\n"
+        "Sekarang bisa generate kode pelanggan otomatis!\n\n"
+        "📝 **Cara penggunaan:**\n"
         "1. Kirimkan URL survey dari receipt QR code\n"
-        "2. Kirimkan kode pelanggan Anda\n"
+        "2. Input kode pelanggan (manual/generate)\n"
         "3. Kirimkan pesan untuk survey\n"
         "4. Bot akan mengisi survey otomatis\n"
-        "5. Dapatkan konfirmasi survey selesai!\n\n"
+        "5. Dapatkan promo code 5 digit!\n\n"
         "Silakan kirimkan URL survey dari QR code receipt Anda:\n"
-        "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...)"
+        "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...)",
+        parse_mode='Markdown'
     )
     
     return WAITING_URL
@@ -614,31 +636,85 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     
     user_sessions[user_id]['survey_url'] = survey_url
     
+    # Create inline keyboard for customer code options
+    keyboard = [
+        [InlineKeyboardButton("📝 Input Manual", callback_data="manual_code")],
+        [InlineKeyboardButton("🎲 Generate Otomatis", callback_data="generate_code")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        "✅ URL survey tersimpan\n\n"
-        "Sekarang kirimkan kode pelanggan dari receipt:\n"
-        "(contoh: 16644 086207270916)"
+        "✅ **URL Survey Tersimpan**\n\n"
+        "Sekarang pilih cara input kode pelanggan:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
     )
     
     return WAITING_CODE
 
+async def customer_code_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle customer code input method selection"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    
+    if query.data == "manual_code":
+        await query.edit_message_text(
+            "📝 **Input Manual**\n\n"
+            "Silakan kirimkan kode pelanggan dari receipt:\n"
+            "(contoh: 16644 086207270916)",
+            parse_mode='Markdown'
+        )
+        user_sessions[user_id]['code_method'] = 'manual'
+        return WAITING_CODE
+        
+    elif query.data == "generate_code":
+        # Generate customer code automatically
+        generated_code = bot.generate_customer_code()
+        user_sessions[user_id]['customer_code'] = generated_code
+        user_sessions[user_id]['code_method'] = 'generated'
+        
+        await query.edit_message_text(
+            f"🎲 **Kode Otomatis Berhasil Di-Generate!**\n\n"
+            f"🔢 **Generated Code**: `{generated_code}`\n\n"
+            f"Kode ini dibuat berdasarkan pattern yang berhasil dari store 16644.\n\n"
+            f"💡 **Pattern**: 16644 08(XX)0727(YY)16\n"
+            f"• XX = {generated_code[8:10]} (random)\n"
+            f"• YY = {generated_code[14:16]} (random)\n\n"
+            f"Sekarang kirimkan pesan untuk survey:",
+            parse_mode='Markdown'
+        )
+        return WAITING_MESSAGE
+
 async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive customer code"""
+    """Receive customer code (manual input only)"""
     user_id = update.effective_user.id
     customer_code = update.message.text.strip()
+    
+    # Check if user selected manual method
+    if user_sessions.get(user_id, {}).get('code_method') != 'manual':
+        await update.message.reply_text(
+            "❌ Silakan pilih metode 'Input Manual' terlebih dahulu"
+        )
+        return WAITING_CODE
     
     # Validate customer code format
     if not customer_code or len(customer_code.replace(' ', '')) < 10:
         await update.message.reply_text(
-            "❌ Kode pelanggan tidak valid. Silakan kirim kode yang benar dari receipt:"
+            "❌ **Kode Pelanggan Tidak Valid**\n\n"
+            "Silakan kirim kode yang benar dari receipt:\n"
+            "(contoh: 16644 086207270916)",
+            parse_mode='Markdown'
         )
         return WAITING_CODE
     
     user_sessions[user_id]['customer_code'] = customer_code
     
     await update.message.reply_text(
-        f"✅ Kode pelanggan: {customer_code}\n\n"
-        "Sekarang kirimkan pesan yang ingin Anda sampaikan dalam survey:"
+        f"✅ **Kode Pelanggan Manual**: `{customer_code}`\n\n"
+        f"Sekarang kirimkan pesan yang ingin Anda sampaikan dalam survey:",
+        parse_mode='Markdown'
     )
     
     return WAITING_MESSAGE
@@ -740,7 +816,10 @@ def main():
         entry_points=[CommandHandler('start', start)],
         states={
             WAITING_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)],
-            WAITING_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code)],
+            WAITING_CODE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code),
+                CallbackQueryHandler(customer_code_callback)
+            ],
             WAITING_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message)],
         },
         fallbacks=[CommandHandler('cancel', cancel)]
