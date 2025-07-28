@@ -55,7 +55,6 @@ class StarbucksSurveyBot:
         connector = aiohttp.TCPConnector(
             limit=20,
             limit_per_host=10,
-            keepalive_timeout=30,
             enable_cleanup_closed=True,
             force_close=True
         )
