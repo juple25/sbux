@@ -604,19 +604,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_sessions[user_id] = {}
     
     await update.message.reply_text(
-        "🌟 **Selamat datang di Starbucks Survey Bot!**\n\n"
-        "Bot ini akan membantu Anda mengisi survey Starbucks secara otomatis.\n\n"
-        "🆕 **FITUR BARU: Customer Code Generator!**\n"
+        "🌟 *Selamat datang di Starbucks Survey Bot!*\n\n"
+        "Bot ini akan membantu Anda mengisi survey Starbucks secara otomatis\\.\n\n"
+        "🆕 *FITUR BARU: Customer Code Generator!*\n"
         "Sekarang bisa generate kode pelanggan otomatis!\n\n"
-        "📝 **Cara penggunaan:**\n"
-        "1. Kirimkan URL survey dari receipt QR code\n"
-        "2. Input kode pelanggan (manual/generate)\n"
-        "3. Kirimkan pesan untuk survey\n"
-        "4. Bot akan mengisi survey otomatis\n"
-        "5. Dapatkan promo code 5 digit!\n\n"
+        "📝 *Cara penggunaan:*\n"
+        "1\\. Kirimkan URL survey dari receipt QR code\n"
+        "2\\. Input kode pelanggan \\(manual/generate\\)\n"
+        "3\\. Kirimkan pesan untuk survey\n"
+        "4\\. Bot akan mengisi survey otomatis\n"
+        "5\\. Dapatkan promo code 5 digit!\n\n"
         "Silakan kirimkan URL survey dari QR code receipt Anda:\n"
-        "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...)",
-        parse_mode='Markdown'
+        "\\(contoh: https://www\\.mystarbucksvisit\\.com/websurvey/2/execute\\?_g=\\.\\.\\.\\)",
+        parse_mode='MarkdownV2'
     )
     
     return WAITING_URL
@@ -644,10 +644,10 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "✅ **URL Survey Tersimpan**\n\n"
+        "✅ *URL Survey Tersimpan*\n\n"
         "Sekarang pilih cara input kode pelanggan:",
         reply_markup=reply_markup,
-        parse_mode='Markdown'
+        parse_mode='MarkdownV2'
     )
     
     return WAITING_CODE
@@ -661,10 +661,10 @@ async def customer_code_callback(update: Update, context: ContextTypes.DEFAULT_T
     
     if query.data == "manual_code":
         await query.edit_message_text(
-            "📝 **Input Manual**\n\n"
+            "📝 *Input Manual*\n\n"
             "Silakan kirimkan kode pelanggan dari receipt:\n"
-            "(contoh: 16644 086207270916)",
-            parse_mode='Markdown'
+            "\\(contoh: 16644 086207270916\\)",
+            parse_mode='MarkdownV2'
         )
         user_sessions[user_id]['code_method'] = 'manual'
         return WAITING_CODE
@@ -676,14 +676,14 @@ async def customer_code_callback(update: Update, context: ContextTypes.DEFAULT_T
         user_sessions[user_id]['code_method'] = 'generated'
         
         await query.edit_message_text(
-            f"🎲 **Kode Otomatis Berhasil Di-Generate!**\n\n"
-            f"🔢 **Generated Code**: `{generated_code}`\n\n"
-            f"Kode ini dibuat berdasarkan pattern yang berhasil dari store 16644.\n\n"
-            f"💡 **Pattern**: 16644 08(XX)0727(YY)16\n"
-            f"• XX = {generated_code[8:10]} (random)\n"
-            f"• YY = {generated_code[14:16]} (random)\n\n"
+            f"🎲 *Kode Otomatis Berhasil Di\\-Generate!*\n\n"
+            f"🔢 *Generated Code*: `{generated_code}`\n\n"
+            f"Kode ini dibuat berdasarkan pattern yang berhasil dari store 16644\\.\n\n"
+            f"💡 *Pattern*: 16644 08\\(XX\\)0727\\(YY\\)16\n"
+            f"• XX = {generated_code[8:10]} \\(random\\)\n"
+            f"• YY = {generated_code[14:16]} \\(random\\)\n\n"
             f"Sekarang kirimkan pesan untuk survey:",
-            parse_mode='Markdown'
+            parse_mode='MarkdownV2'
         )
         return WAITING_MESSAGE
 
@@ -702,19 +702,19 @@ async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     # Validate customer code format
     if not customer_code or len(customer_code.replace(' ', '')) < 10:
         await update.message.reply_text(
-            "❌ **Kode Pelanggan Tidak Valid**\n\n"
+            "❌ *Kode Pelanggan Tidak Valid*\n\n"
             "Silakan kirim kode yang benar dari receipt:\n"
-            "(contoh: 16644 086207270916)",
-            parse_mode='Markdown'
+            "\\(contoh: 16644 086207270916\\)",
+            parse_mode='MarkdownV2'
         )
         return WAITING_CODE
     
     user_sessions[user_id]['customer_code'] = customer_code
     
     await update.message.reply_text(
-        f"✅ **Kode Pelanggan Manual**: `{customer_code}`\n\n"
+        f"✅ *Kode Pelanggan Manual*: `{customer_code}`\n\n"
         f"Sekarang kirimkan pesan yang ingin Anda sampaikan dalam survey:",
-        parse_mode='Markdown'
+        parse_mode='MarkdownV2'
     )
     
     return WAITING_MESSAGE
@@ -822,7 +822,8 @@ def main():
             ],
             WAITING_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message)],
         },
-        fallbacks=[CommandHandler('cancel', cancel)]
+        fallbacks=[CommandHandler('cancel', cancel)],
+        per_message=False
     )
     
     application.add_handler(conv_handler)
