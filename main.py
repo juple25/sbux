@@ -1,876 +1,437 @@
 import os
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler
-import aiohttp
-from bs4 import BeautifulSoup
 import asyncio
-from urllib.parse import unquote, quote, urlparse, parse_qs
-import re
-import uuid
-import json
-import base64
-import random
+import logging
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 import time
-import hashlib
+import re
+from typing import Optional
 
-# Setup logging
+# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# States untuk conversation
-WAITING_URL, WAITING_CODE, WAITING_MESSAGE = range(3)
-
-# Data storage untuk session
-user_sessions = {}
+# States for conversation
+WAITING_CUSTOMER_CODE = 1
 
 class StarbucksSurveyBot:
     def __init__(self):
-        self.base_url = "https://www.mystarbucksvisit.com"
-        # Indonesian proxy for geo-targeting and avoiding detection
-        self.proxy_url = "http://georgesam222:Komang222_country-id@geo.iproyal.com:12321"
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'sec-ch-ua': '"Chromium";v="118", "Google Chrome";v="118", "Not=A?Brand";v="99"',
-            'sec-ch-ua-mobile': '?1',
-            'sec-ch-ua-platform': '"iOS"',
-            'sec-fetch-dest': 'document',
-            'sec-fetch-mode': 'navigate',
-            'sec-fetch-site': 'same-origin',
-            'sec-fetch-user': '?1',
-            'Upgrade-Insecure-Requests': '1'
-        }
-        self.session_data = {}
-
-    async def create_session(self):
-        """Create aiohttp session with Indonesian proxy for better geo-targeting"""
-        timeout = aiohttp.ClientTimeout(total=45, connect=15)
+        self.driver = None
         
-        connector = aiohttp.TCPConnector(
-            limit=20,
-            limit_per_host=10,
-            enable_cleanup_closed=True,
-            force_close=True
-        )
+    def setup_driver(self, headless: bool = True) -> webdriver.Chrome:
+        """Setup Chrome WebDriver with proper configuration"""
+        chrome_options = Options()
         
-        logger.info(f"🌐 Using Indonesian proxy for geo-targeting: {self.proxy_url.split('@')[1]}")
+        if headless:
+            chrome_options.add_argument("--headless")
         
-        return aiohttp.ClientSession(
-            headers=self.headers,
-            timeout=timeout,
-            connector=connector,
-            cookie_jar=aiohttp.CookieJar(),
-            connector_owner=True
-        )
-
-    def extract_session_from_url(self, survey_url):
-        """Extract session parameters from survey URL with improved parsing"""
+        # Additional options for stability
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--disable-extensions")
+        chrome_options.add_argument("--disable-plugins")
+        chrome_options.add_argument("--disable-images")
+        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        
+        # Setup service with ChromeDriverManager
+        service = Service(ChromeDriverManager().install())
+        
+        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        self.driver.implicitly_wait(10)
+        
+        return self.driver
+    
+    def access_survey_page(self, customer_code: str) -> bool:
+        """Access Starbucks survey page and enter customer code"""
         try:
-            # Handle URL with parentheses in query parameters
-            if '(' in survey_url and ')' in survey_url:
-                # Extract content between parentheses
-                start = survey_url.find('(') + 1
-                end = survey_url.find(')')
-                params_str = survey_url[start:end]
-                
-                # Parse individual parameters
-                g_param = None
-                s2_param = None
-                
-                if '&' in params_str:
-                    parts = params_str.split('&')
-                    for part in parts:
-                        if '_g=' in part:
-                            g_param = part.split('_g=')[1]
-                        elif '_s2=' in part:
-                            s2_param = part.split('_s2=')[1]
-                        elif part.startswith('NTAy'):  # Handle case where _g= is missing
-                            g_param = part
-                else:
-                    # Single parameter case
-                    if '_g=' in params_str:
-                        g_param = params_str.split('_g=')[1]
-                    elif '_s2=' in params_str:
-                        s2_param = params_str.split('_s2=')[1]
-            else:
-                # Standard URL parsing
-                parsed = urlparse(survey_url)
-                params = parse_qs(parsed.query)
-                
-                g_param = params.get('_g', [None])[0]
-                s2_param = params.get('_s2', [None])[0]
+            # Navigate to Starbucks survey page
+            survey_url = "https://customervoice.starbucks.co.id/"
+            logger.info(f"Navigating to: {survey_url}")
             
-            # URL decode if needed
-            if g_param:
-                g_param = unquote(g_param)
-            if s2_param:
-                s2_param = unquote(s2_param)
+            self.driver.get(survey_url)
             
-            logger.info(f"Extracted _g: {g_param}, _s2: {s2_param}")
-            return g_param, s2_param
+            # Wait for page to load
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            
+            # Look for customer code input field
+            customer_code_input = WebDriverWait(self.driver, 15).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='text']"))
+            )
+            
+            # Enter customer code
+            customer_code_input.clear()
+            customer_code_input.send_keys(customer_code)
+            
+            # Find and click start button
+            start_button = self.driver.find_element(By.CSS_SELECTOR, "input[type='submit'], button[type='submit'], .start-btn, #start")
+            start_button.click()
+            
+            # Wait for survey to load
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "form, .survey-form, .question"))
+            )
+            
+            logger.info("Successfully accessed survey page")
+            return True
             
         except Exception as e:
-            logger.error(f"Error extracting session from URL: {e}")
-            return None, None
-
-    async def get_initial_page(self, session, survey_url=None):
-        """Get initial survey page and extract session data"""
+            logger.error(f"Error accessing survey page: {str(e)}")
+            return False
+    
+    def select_language_indonesian(self) -> bool:
+        """Select Indonesian language if language selection is available"""
         try:
-            if survey_url:
-                url = survey_url
-                g_param, s2_param = self.extract_session_from_url(survey_url)
-                logger.info(f"Using provided survey URL: {url}")
-            else:
-                return None
-            
-            # Store session data
-            self.session_data = {
-                'g_param': g_param,
-                's2_param': s2_param,
-                'referer': url
-            }
-            
-            logger.info(f"=== URL FOR MANUAL TEST: {url} ===")
-            
-            # Add random delay to avoid detection
-            await asyncio.sleep(random.uniform(1, 3))
-            
-            # Get initial page with mobile browser headers and Indonesian proxy
-            async with session.get(url, headers=self.headers, proxy=self.proxy_url) as response:
-                response_text = await response.text()
-                if response.status == 200:
-                    logger.info("✅ Initial page loaded successfully via Indonesian proxy")
-                    return response_text
-                else:
-                    logger.error(f"Failed to get initial page: {response.status}")
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"Error getting initial page: {e}")
-            return None
-
-    def get_smart_code_formats(self, customer_code):
-        """Generate smart customer code formats based on common patterns"""
-        formats = []
-        
-        # Clean the original code
-        clean_code = customer_code.replace(' ', '').replace('-', '').upper()
-        
-        # Add original format first
-        formats.append(customer_code)
-        
-        # Add cleaned format
-        if clean_code not in formats:
-            formats.append(clean_code)
-        
-        # Try common spacing patterns for Indonesian receipts
-        if len(clean_code) >= 10:
-            # Pattern: XXXXX XXXXX
-            spaced = f"{clean_code[:5]} {clean_code[5:]}"
-            if spaced not in formats:
-                formats.append(spaced)
-        
-        return formats[:3]  # Limit to 3 formats to avoid rate limiting
-
-    async def submit_language_selection(self, session):
-        """Submit language selection form (Bahasa Indonesia)"""
-        try:
-            await asyncio.sleep(random.uniform(1, 3))
-            
-            form_data = {
-                'language': 'id',
-                '_g': self.session_data.get('g_param', ''),
-                '_s2': self.session_data.get('s2_param', '')
-            }
-            
-            headers = self.headers.copy()
-            headers['Content-Type'] = 'application/x-www-form-urlencoded'
-            headers['Referer'] = self.session_data.get('referer', '')
-            
-            endpoints_to_try = [
-                f"{self.base_url}/websurvey/2/setLanguage",
-                f"{self.base_url}/websurvey/2/language", 
-                f"{self.base_url}/websurvey/2/execute"
+            # Look for language selector
+            language_selectors = [
+                "select[name*='lang']",
+                "select[id*='lang']",
+                ".language-select",
+                "#language-selector"
             ]
             
-            for endpoint in endpoints_to_try:
+            for selector in language_selectors:
                 try:
-                    async with session.post(endpoint, data=form_data, headers=headers, proxy=self.proxy_url) as response:
-                        logger.info(f"Language endpoint {endpoint}: {response.status}")
-                        
-                        if response.status in [200, 302]:
-                            logger.info("✅ Language selection successful")
+                    language_element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    select = Select(language_element)
+                    
+                    # Try to find Indonesian option
+                    for option in select.options:
+                        if any(keyword in option.text.lower() for keyword in ['indonesia', 'bahasa', 'id']):
+                            select.select_by_visible_text(option.text)
+                            logger.info("Selected Indonesian language")
                             return True
-                except Exception as e:
-                    logger.warning(f"Language endpoint {endpoint} failed: {e}")
+                            
+                except:
                     continue
                     
-            logger.info("Language selection endpoints not found, continuing...")
-            return True  # Continue even if language selection endpoint not found
+            logger.info("No language selector found or Indonesian not available")
+            return True
             
         except Exception as e:
-            logger.error(f"Error submitting language: {e}")
+            logger.error(f"Error selecting language: {str(e)}")
             return False
-
-    async def submit_customer_code(self, session, customer_code):
-        """Submit customer code using multiple approaches"""
+    
+    def fill_survey_questions(self) -> bool:
+        """Fill out all survey questions with positive responses"""
         try:
-            code_formats = self.get_smart_code_formats(customer_code)
-            logger.info(f"Trying customer code formats: {code_formats}")
+            # Select Indonesian language first
+            self.select_language_indonesian()
+            time.sleep(2)
             
-            # Try different approaches since traditional endpoints return 404
+            # Find all radio buttons and select positive answers (usually highest value)
+            radio_groups = {}
+            radio_buttons = self.driver.find_elements(By.CSS_SELECTOR, "input[type='radio']")
             
-            # Approach 1: Try original URL with customer code in query params
-            logger.info("Approach 1: Trying query parameter method...")
-            for code_format in code_formats:
+            for radio in radio_buttons:
+                name = radio.get_attribute('name')
+                value = radio.get_attribute('value')
+                
+                if name and value:
+                    if name not in radio_groups:
+                        radio_groups[name] = []
+                    radio_groups[name].append((radio, value))
+            
+            # Select highest value for each question (most positive response)
+            for group_name, radios in radio_groups.items():
                 try:
-                    # Construct URL with customer code
-                    code_url = f"{self.base_url}/websurvey/2/execute?_g={self.session_data.get('g_param', '')}&_s2={self.session_data.get('s2_param', '')}&code={code_format}#!/1"
+                    # Sort by value and select the highest (most positive)
+                    radios.sort(key=lambda x: int(x[1]) if x[1].isdigit() else 0, reverse=True)
+                    best_radio = radios[0][0]
                     
-                    await asyncio.sleep(random.uniform(2, 4))
-                    async with session.get(code_url, headers=self.headers, proxy=self.proxy_url) as response:
-                        response_text = await response.text()
-                        logger.info(f"Query param approach with {code_format}: {response.status}")
+                    if best_radio.is_enabled():
+                        self.driver.execute_script("arguments[0].click();", best_radio)
+                        logger.info(f"Selected positive answer for question group: {group_name}")
                         
-                        if response.status == 200:
-                            # Check if page shows survey questions (success indicator)
-                            success_indicators = [
-                                'terima kasih atas kunjungan',
-                                'survey',
-                                'berikutnya', 
-                                'pelanggan yang berharga',
-                                'pilih jenis kunjungan',
-                                'membeli dan langsung pergi'
-                            ]
-                            
-                            if any(indicator in response_text.lower() for indicator in success_indicators):
-                                logger.info(f"✅ Customer code accepted via query param: {code_format}")
-                                return True
-                                
                 except Exception as e:
-                    logger.warning(f"Query param approach failed: {e}")
+                    logger.warning(f"Could not select radio for {group_name}: {str(e)}")
+            
+            # Handle dropdown selects
+            selects = self.driver.find_elements(By.CSS_SELECTOR, "select")
+            for select_element in selects:
+                try:
+                    select = Select(select_element)
+                    options = select.options[1:]  # Skip first option (usually empty)
+                    
+                    if options:
+                        # Select positive options
+                        for option in options:
+                            text = option.text.lower()
+                            if any(keyword in text for keyword in ['strongly agree', 'sangat setuju', 'buy and go', 'yes', 'ya']):
+                                select.select_by_visible_text(option.text)
+                                logger.info(f"Selected dropdown option: {option.text}")
+                                break
+                        else:
+                            # Default to first available option
+                            select.select_by_index(1)
+                            
+                except Exception as e:
+                    logger.warning(f"Could not handle select element: {str(e)}")
+            
+            # Fill text areas if any
+            text_areas = self.driver.find_elements(By.CSS_SELECTOR, "textarea")
+            for textarea in text_areas:
+                try:
+                    if not textarea.get_attribute('value'):
+                        textarea.send_keys("Excellent service and great coffee quality!")
+                        logger.info("Filled textarea with positive comment")
+                except:
+                    pass
+            
+            time.sleep(2)
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error filling survey questions: {str(e)}")
+            return False
+    
+    def submit_survey(self) -> bool:
+        """Submit the completed survey"""
+        try:
+            # Look for submit buttons
+            submit_selectors = [
+                "input[type='submit']",
+                "button[type='submit']", 
+                ".submit-btn",
+                "#submit",
+                "button:contains('Submit')",
+                "button:contains('Kirim')"
+            ]
+            
+            for selector in submit_selectors:
+                try:
+                    submit_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if submit_button.is_enabled():
+                        self.driver.execute_script("arguments[0].click();", submit_button)
+                        logger.info("Survey submitted successfully")
+                        time.sleep(3)
+                        return True
+                except:
                     continue
             
-            # Approach 2: Try AJAX/JSON approach
-            logger.info("Approach 2: Trying AJAX/JSON method...")
-            headers = self.headers.copy()
-            headers['Content-Type'] = 'application/json'
-            headers['X-Requested-With'] = 'XMLHttpRequest'
-            headers['Referer'] = self.session_data.get('referer', '')
-            
-            ajax_endpoints = [
-                f"{self.base_url}/websurvey/2/api/validate",
-                f"{self.base_url}/websurvey/2/ajax/code", 
-                f"{self.base_url}/api/survey/validate",
-                f"{self.base_url}/websurvey/validate"
-            ]
-            
-            for endpoint in ajax_endpoints:
-                for code_format in code_formats:
-                    try:
-                        await asyncio.sleep(random.uniform(2, 4))
-                        
-                        json_data = {
-                            'customerCode': code_format,
-                            'code': code_format,
-                            'surveyId': '5020',
-                            'sessionId': self.session_data.get('s2_param', ''),
-                            'language': 'id'
-                        }
-                        
-                        async with session.post(endpoint, json=json_data, headers=headers, proxy=self.proxy_url) as response:
-                            response_text = await response.text()
-                            logger.info(f"AJAX approach {endpoint} with {code_format}: {response.status}")
-                            
-                            if response.status == 200:
-                                try:
-                                    json_response = json.loads(response_text)
-                                    if json_response.get('success') or json_response.get('valid'):
-                                        logger.info(f"✅ Customer code accepted via AJAX: {code_format}")
-                                        return True
-                                except:
-                                    # Not JSON, check text content
-                                    if 'success' in response_text.lower():
-                                        logger.info(f"✅ Customer code accepted via AJAX: {code_format}")
-                                        return True
-                                        
-                    except Exception as e:
-                        logger.warning(f"AJAX approach {endpoint} failed: {e}")
-                        continue
-            
-            # Approach 3: Skip validation (assume code is valid and continue)
-            logger.info("Approach 3: Skipping customer code validation...")
-            logger.info("ℹ️ Customer code validation endpoints not found, continuing with survey...")
-            logger.info("ℹ️ This might work if validation happens client-side only")
-            return True  # Assume success and continue
+            # Try JavaScript submission
+            self.driver.execute_script("document.forms[0].submit();")
+            time.sleep(3)
+            return True
             
         except Exception as e:
-            logger.error(f"Error submitting customer code: {e}")
+            logger.error(f"Error submitting survey: {str(e)}")
             return False
-
-    async def submit_form_step(self, session, form_data, headers, step_name):
-        """Submit a single form step"""
-        endpoints_to_try = [
-            f"{self.base_url}/websurvey/2/next",
-            f"{self.base_url}/websurvey/2/submit",
-            f"{self.base_url}/websurvey/2/continue"
-        ]
-        
-        for endpoint in endpoints_to_try:
-            try:
-                async with session.post(endpoint, data=form_data, headers=headers, proxy=self.proxy_url) as response:
-                    response_text = await response.text()
-                    logger.info(f"{step_name} endpoint {endpoint}: {response.status}")
-                    
-                    if response.status in [200, 302]:
-                        # Check for success/progress indicators
-                        success_indicators = ['berikutnya', 'next', 'continue', 'thank', 'terima kasih', 'promo']
-                        if any(word in response_text.lower() for word in success_indicators):
-                            logger.info(f"✅ {step_name} step successful")
-                            return response_text  # Return response text for promo code extraction
-                            
-            except Exception as e:
-                logger.warning(f"{step_name} endpoint {endpoint} failed: {e}")
-                continue
-                
-        logger.warning(f"⚠️ {step_name} step may have failed, continuing...")
-        return True  # Continue anyway
-
-    async def extract_promo_code(self, response_text):
-        """Extract promo code dari response HTML"""
+    
+    def extract_promo_code(self) -> Optional[str]:
+        """Extract promo code from the completion page"""
         try:
-            if not isinstance(response_text, str):
-                return None
-                
-            logger.info("🔍 Searching for promo code in response...")
+            # Wait for completion page
+            time.sleep(5)
             
-            # Common promo code patterns
-            promo_patterns = [
-                r'(?:kode|code|promo|coupon|reward)[\s:]*([A-Z0-9]{4,12})',  # Kode: ABC123
-                r'([A-Z0-9]{6,12})',  # Stand-alone alphanumeric codes
-                r'(?:gratis|free|diskon|discount)[\s:]*([A-Z0-9]{4,12})',  # Free: ABC123
-                r'(?:voucher|kupon)[\s:]*([A-Z0-9]{4,12})',  # Voucher: ABC123
-                r'ID[\s:]*([A-Z0-9]{6,12})',  # ID: ABC123456
+            # Look for promo code patterns
+            promo_selectors = [
+                ".promo-code",
+                ".voucher-code", 
+                "#promo-code",
+                ".code",
+                "[data-promo]"
             ]
             
-            # Search in HTML content
-            for pattern in promo_patterns:
-                matches = re.findall(pattern, response_text, re.IGNORECASE)
-                for match in matches:
-                    # Filter out common false positives
-                    if len(match) >= 4 and not match.lower() in ['html', 'body', 'form', 'input']:
-                        logger.info(f"🎁 Potential promo code found: {match}")
-                        return match
+            for selector in promo_selectors:
+                try:
+                    element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    code = element.text.strip()
+                    if code and len(code) >= 4:
+                        logger.info(f"Found promo code: {code}")
+                        return code
+                except:
+                    continue
             
-            # Also search in parsed HTML
-            try:
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(response_text, 'html.parser')
+            # Search in page text for patterns like 5-digit codes
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text
+            promo_pattern = r'\b[A-Z0-9]{5}\b'
+            matches = re.findall(promo_pattern, page_text)
+            
+            if matches:
+                logger.info(f"Extracted promo code from text: {matches[0]}")
+                return matches[0]
                 
-                # Look for text containing promo codes
-                text_content = soup.get_text()
-                for pattern in promo_patterns:
-                    matches = re.findall(pattern, text_content, re.IGNORECASE)
-                    for match in matches:
-                        if len(match) >= 4 and not match.lower() in ['html', 'body', 'form', 'input']:
-                            logger.info(f"🎁 Promo code found in parsed HTML: {match}")
-                            return match
-                            
-                # Look for specific elements that might contain promo codes
-                promo_elements = soup.find_all(['span', 'div', 'p', 'strong', 'b'], 
-                                             text=re.compile(r'[A-Z0-9]{6,12}'))
-                for element in promo_elements:
-                    code_text = element.get_text().strip()
-                    code_match = re.search(r'([A-Z0-9]{6,12})', code_text)
-                    if code_match:
-                        logger.info(f"🎁 Promo code found in element: {code_match.group(1)}")
-                        return code_match.group(1)
-                        
-            except ImportError:
-                pass  # BeautifulSoup not available
-                
-            logger.info("❌ No promo code found in response")
+            logger.warning("No promo code found on completion page")
             return None
             
         except Exception as e:
-            logger.error(f"Error extracting promo code: {e}")
+            logger.error(f"Error extracting promo code: {str(e)}")
             return None
-
-    async def submit_survey_questions(self, session, message):
-        """Submit all survey questions step by step"""
+    
+    def run_complete_survey(self, customer_code: str) -> dict:
+        """Run the complete survey automation process"""
+        result = {
+            'success': False,
+            'promo_code': None,
+            'message': ''
+        }
+        
         try:
-            headers = self.headers.copy()
-            headers['Content-Type'] = 'application/x-www-form-urlencoded'
-            headers['Referer'] = self.session_data.get('referer', '')
+            # Setup driver
+            self.setup_driver(headless=True)
             
-            # Step 1: Visit type and food order
-            await asyncio.sleep(random.uniform(2, 4))
-            step1_data = {
-                'visit_type': '1',  # Membeli dan langsung pergi
-                'food_order': '1',  # Ya
-                '_g': self.session_data.get('g_param', ''),
-                '_s2': self.session_data.get('s2_param', '')
-            }
+            # Access survey page
+            if not self.access_survey_page(customer_code):
+                result['message'] = "Failed to access survey page"
+                return result
             
-            success = await self.submit_form_step(session, step1_data, headers, "visit questions")
-            if not success:
-                return False
-                
-            # Step 2: Return visit frequency
-            await asyncio.sleep(random.uniform(2, 4))
-            step2_data = {
-                'return_visit': '1',  # Hari ini atau besok
-                '_g': self.session_data.get('g_param', ''),
-                '_s2': self.session_data.get('s2_param', '')
-            }
+            # Fill survey questions
+            if not self.fill_survey_questions():
+                result['message'] = "Failed to fill survey questions"
+                return result
             
-            success = await self.submit_form_step(session, step2_data, headers, "return visit")
-            if not success:
-                return False
-                
-            # Step 3: Rating questions (all 7 - Sangat setuju)
-            await asyncio.sleep(random.uniform(2, 4))
-            step3_data = {
-                'rating_1': '7',
-                'rating_2': '7',
-                'rating_3': '7', 
-                'rating_4': '7',
-                'rating_5': '7',
-                'rating_6': '7',
-                'rating_7': '7',
-                '_g': self.session_data.get('g_param', ''),
-                '_s2': self.session_data.get('s2_param', '')
-            }
+            # Submit survey
+            if not self.submit_survey():
+                result['message'] = "Failed to submit survey"
+                return result
             
-            success = await self.submit_form_step(session, step3_data, headers, "ratings")
-            if not success:
-                return False
-                
-            # Step 4: Final feedback (this should return promo code)
-            await asyncio.sleep(random.uniform(2, 4)) 
-            step4_data = {
-                'feedback': message,
-                'additional_comments': message,
-                '_g': self.session_data.get('g_param', ''),
-                '_s2': self.session_data.get('s2_param', '')
-            }
-            
-            final_response = await self.submit_form_step(session, step4_data, headers, "final feedback")
-            
-            # Try to extract promo code from final response
-            if isinstance(final_response, str):
-                promo_code = await self.extract_promo_code(final_response)
-                if promo_code:
-                    return promo_code  # Return the promo code
-                    
-            return "SURVEY_COMPLETED"  # Fallback if no promo code found
-            
-        except Exception as e:
-            logger.error(f"Error submitting survey questions: {e}")
-            return False
-
-    async def simulate_complete_survey(self, session, customer_code, message):
-        """Simulate complete survey with realistic timing and generate mock promo code"""
-        try:
-            logger.info("🎭 Simulating complete survey flow...")
-            
-            # Simulate each step with realistic delays
-            steps = [
-                ("Memilih Bahasa Indonesia", 2, 4),
-                (f"Memasukkan kode pelanggan: {customer_code}", 3, 6),
-                ("Pilih jenis kunjungan: Membeli dan langsung pergi", 2, 4),
-                ("Apakah pesan makanan: Ya", 2, 3),
-                ("Kapan kembali: Hari ini atau besok", 2, 3),
-                ("Rating 1/7: Memilih '7 Sangat setuju'", 1, 2),
-                ("Rating 2/7: Memilih '7 Sangat setuju'", 1, 2),
-                ("Rating 3/7: Memilih '7 Sangat setuju'", 1, 2),
-                ("Rating 4/7: Memilih '7 Sangat setuju'", 1, 2),
-                ("Rating 5/7: Memilih '7 Sangat setuju'", 1, 2),
-                ("Rating 6/7: Memilih '7 Sangat setuju'", 1, 2),
-                ("Rating 7/7: Memilih '7 Sangat setuju'", 1, 2),
-                (f"Mengirim feedback: {message[:30]}...", 3, 5),
-                ("Memproses hasil survey...", 2, 4),
-                ("Menghasilkan kode promo...", 1, 3)
-            ]
-            
-            for step_desc, min_delay, max_delay in steps:
-                logger.info(f"📝 {step_desc}")
-                await asyncio.sleep(random.uniform(min_delay, max_delay))
-            
-            # Generate realistic promo code based on customer code
-            promo_code = self.generate_realistic_promo_code(customer_code)
-            logger.info(f"🎁 Generated promo code: {promo_code}")
-            
-            return promo_code
-            
-        except Exception as e:
-            logger.error(f"Error in survey simulation: {e}")
-            return None
-
-    def generate_realistic_promo_code(self, customer_code):
-        """Generate realistic 5-digit promo code like Starbucks survey"""
-        import hashlib
-        
-        # Use customer code as seed for consistent generation
-        seed = f"STARBUCKS{customer_code}{time.strftime('%Y%m%d')}"
-        hash_value = hashlib.md5(seed.encode()).hexdigest()
-        
-        # Extract 5 digits from hash
-        # Convert hex to numbers and take first 5 digits
-        numbers = ''.join([str(int(c, 16)) for c in hash_value[:10]])
-        
-        # Take first 5 digits and ensure they're not all zeros
-        promo_code = numbers[:5]
-        
-        # If starts with 0, replace with random non-zero digit
-        if promo_code[0] == '0':
-            promo_code = str(int(hash_value[10], 16) % 9 + 1) + promo_code[1:]
-        
-        # Ensure it's exactly 5 digits
-        promo_code = promo_code.ljust(5, '0')[:5]
-        
-        logger.info(f"🎁 Generated 5-digit promo code: {promo_code}")
-        return promo_code
-
-    def generate_customer_code(self, store_id="16644"):
-        """Generate realistic customer code with dynamic date (7 days back range)"""
-        import random
-        from datetime import datetime, timedelta
-        
-        # Pattern: 16644 08(XX)MMDD(YY)16
-        # Fixed parts
-        prefix = "08"
-        suffix = "16"
-        
-        # Generate random date within last 7 days
-        today = datetime.now()
-        days_back = random.randint(0, 7)  # 0-7 days ago
-        selected_date = today - timedelta(days=days_back)
-        
-        # Format date as MMDD
-        month = f"{selected_date.month:02d}"
-        day = f"{selected_date.day:02d}"
-        date_str = f"{month}{day}"
-        
-        # Generate variable parts
-        xx = random.randint(10, 99)  # 2 digit random: 10-99
-        yy = random.randint(1, 99)   # 2 digit random: 01-99
-        
-        # Construct customer code
-        customer_code = f"{store_id} {prefix}{xx:02d}{date_str}{yy:02d}{suffix}"
-        
-        # Log with date info
-        date_info = selected_date.strftime("%d %B %Y")
-        logger.info(f"🎲 Generated customer code: {customer_code}")
-        logger.info(f"📅 Generated for date: {date_info} ({days_back} days ago)")
-        
-        return customer_code
-
-    async def run_survey(self, customer_code, message, survey_url=None):
-        """Run complete survey automation using realistic simulation"""
-        session = None
-        try:
-            session = await self.create_session()
-            
-            # Step 1: Get initial page
-            logger.info("Step 1: Getting initial page...")
-            page = await self.get_initial_page(session, survey_url)
-            if not page:
-                return None, "Gagal mengakses halaman survey"
-            
-            # Check if page contains survey elements
-            if not any(keyword in page.lower() for keyword in ['survey', 'starbucks', 'kode', 'pelanggan']):
-                return None, "Halaman survey tidak valid atau expired"
-            
-            logger.info("✅ Survey page accessed successfully")
-            
-            # Since traditional endpoints don't work, simulate the complete flow
-            # This gives realistic timing and user experience
-            promo_code = await self.simulate_complete_survey(session, customer_code, message)
+            # Extract promo code
+            promo_code = self.extract_promo_code()
             
             if promo_code:
-                logger.info(f"✅ Survey simulation completed with promo code: {promo_code}")
-                return promo_code, None
+                result['success'] = True
+                result['promo_code'] = promo_code
+                result['message'] = "Survey completed successfully!"
             else:
-                logger.info("✅ Survey simulation completed")
-                return "SURVEY_COMPLETED", None
-                
+                result['message'] = "Survey submitted but no promo code found"
+            
+            return result
+            
         except Exception as e:
-            logger.error(f"Error in survey automation: {e}")
-            return None, f"Error: {str(e)}"
+            logger.error(f"Error in survey automation: {str(e)}")
+            result['message'] = f"Error: {str(e)}"
+            return result
+            
         finally:
-            # Ensure session is properly closed
-            if session and not session.closed:
-                await session.close()
-                logger.info("🔒 Session closed properly")
+            if self.driver:
+                self.driver.quit()
 
-# Bot handlers (sama seperti sebelumnya)
-bot = StarbucksSurveyBot()
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# Telegram Bot Handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command handler"""
-    user_id = update.effective_user.id
-    user_sessions[user_id] = {}
-    
-    await update.message.reply_text(
-        "🌟 Selamat datang di Starbucks Survey Bot!\n\n"
-        "Bot ini akan membantu Anda mengisi survey Starbucks secara otomatis.\n\n"
-        "🆕 FITUR TERBARU: Smart Customer Code Generator!\n"
-        "• Generate kode otomatis dengan tanggal dinamis\n"
-        "• Random date dalam 7 hari terakhir\n"
-        "• Pattern berdasarkan receipt yang berhasil\n\n"
-        "📝 Cara penggunaan:\n"
-        "1. Kirimkan URL survey dari receipt QR code\n"
-        "2. Pilih kode pelanggan (manual/auto-generate)\n"
-        "3. Kirimkan pesan untuk survey\n"
-        "4. Bot mengisi survey otomatis (rating 7 semua)\n"
-        "5. Dapatkan promo code 5 digit!\n\n"
-        "Silakan kirimkan URL survey dari QR code receipt Anda:\n"
-        "(contoh: https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...)"
-    )
-    
-    return WAITING_URL
+    welcome_message = """
+🎯 **Starbucks Survey Automation Bot (Real Selenium Version)**
 
-async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive survey URL"""
-    user_id = update.effective_user.id
-    survey_url = update.message.text.strip()
-    
-    # Validate URL
-    if not survey_url.startswith('https://www.mystarbucksvisit.com'):
-        await update.message.reply_text(
-            "❌ URL tidak valid. Silakan kirim URL dari QR code receipt Starbucks:\n"
-            "Format: https://www.mystarbucksvisit.com/websurvey/..."
-        )
-        return WAITING_URL
-    
-    user_sessions[user_id]['survey_url'] = survey_url
-    
-    # Create inline keyboard for customer code options
-    keyboard = [
-        [InlineKeyboardButton("📝 Input Manual", callback_data="manual_code")],
-        [InlineKeyboardButton("🎲 Generate Otomatis", callback_data="generate_code")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "✅ URL Survey Tersimpan\n\n"
-        "Sekarang pilih cara input kode pelanggan:",
-        reply_markup=reply_markup
-    )
-    
-    return WAITING_CODE
+Kirim customer code Anda untuk memulai survey otomatis.
 
-async def customer_code_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle customer code input method selection"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    
-    if query.data == "manual_code":
-        await query.edit_message_text(
-            "📝 Input Manual\n\n"
-            "Silakan kirimkan kode pelanggan dari receipt:\n"
-            "(contoh: 16644 086207270916)"
-        )
-        user_sessions[user_id]['code_method'] = 'manual'
-        return WAITING_CODE
-        
-    elif query.data == "generate_code":
-        # Generate customer code automatically
-        generated_code = bot.generate_customer_code()
-        user_sessions[user_id]['customer_code'] = generated_code
-        user_sessions[user_id]['code_method'] = 'generated'
-        
-        # Extract date info for display
-        from datetime import datetime, timedelta
-        date_part = generated_code[10:14]  # MMDD part
-        month = int(date_part[:2])
-        day = int(date_part[2:])
-        
-        # Create date object for this year
-        try:
-            generated_date = datetime(datetime.now().year, month, day)
-            date_display = generated_date.strftime("%d %B %Y")
-        except:
-            date_display = f"Month {month}, Day {day}"
-        
-        await query.edit_message_text(
-            f"🎲 Kode Otomatis Berhasil Di-Generate!\n\n"
-            f"🔢 Generated Code: {generated_code}\n\n"
-            f"📅 Generated Date: {date_display}\n"
-            f"🏪 Store ID: 16644\n\n"
-            f"💡 Pattern Breakdown:\n"
-            f"• Store: {generated_code[:5]}\n"
-            f"• Prefix: {generated_code[6:8]}\n"
-            f"• Random: {generated_code[8:10]}\n"
-            f"• Date: {date_part} ({date_display})\n"
-            f"• Random: {generated_code[14:16]}\n"
-            f"• Suffix: {generated_code[16:18]}\n\n"
-            f"Sekarang kirimkan pesan untuk survey:"
-        )
-        return WAITING_MESSAGE
+⚠️ **Disclaimer**: Bot ini menggunakan browser automation yang sesungguhnya untuk mengisi survey Starbucks. Gunakan dengan bijak dan sesuai dengan terms of service Starbucks.
 
-async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive customer code (manual input only)"""
-    user_id = update.effective_user.id
+Kirimkan customer code Anda sekarang:
+    """
+    
+    await update.message.reply_text(welcome_message, parse_mode='Markdown')
+    return WAITING_CUSTOMER_CODE
+
+async def handle_customer_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle customer code input"""
     customer_code = update.message.text.strip()
     
-    # Check if user selected manual method
-    if user_sessions.get(user_id, {}).get('code_method') != 'manual':
+    if len(customer_code) < 10:
         await update.message.reply_text(
-            "❌ Silakan pilih metode 'Input Manual' terlebih dahulu"
+            "❌ Customer code terlalu pendek. Pastikan Anda memasukkan code yang lengkap."
         )
-        return WAITING_CODE
-    
-    # Validate customer code format
-    if not customer_code or len(customer_code.replace(' ', '')) < 10:
-        await update.message.reply_text(
-            "❌ Kode Pelanggan Tidak Valid\n\n"
-            "Silakan kirim kode yang benar dari receipt:\n"
-            "(contoh: 16644 086207270916)"
-        )
-        return WAITING_CODE
-    
-    user_sessions[user_id]['customer_code'] = customer_code
-    
-    await update.message.reply_text(
-        f"✅ Kode Pelanggan Manual: {customer_code}\n\n"
-        f"Sekarang kirimkan pesan yang ingin Anda sampaikan dalam survey:"
-    )
-    
-    return WAITING_MESSAGE
-
-async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive survey message and process"""
-    user_id = update.effective_user.id
-    message = update.message.text.strip()
-    
-    if not message:
-        await update.message.reply_text(
-            "❌ Pesan tidak boleh kosong. Silakan kirim pesan Anda:"
-        )
-        return WAITING_MESSAGE
-    
-    customer_code = user_sessions[user_id].get('customer_code')
-    survey_url = user_sessions[user_id].get('survey_url')
+        return WAITING_CUSTOMER_CODE
     
     # Send processing message
     processing_msg = await update.message.reply_text(
-        "⏳ Sedang memproses survey...\n\n"
-        "🎯 Mengikuti alur survey seperti pengisian manual:\n"
-        "• Mengakses halaman survey\n"
-        "• Memilih Bahasa Indonesia\n"
-        "• Input kode pelanggan\n"
-        "• Jawab pertanyaan kunjungan\n"
-        "• Isi rating 1-7 (semua pilih '7 Sangat setuju')\n"
-        "• Kirim feedback message\n"
-        "• Generate kode promo 5 digit\n\n"
-        "⏱️ Estimasi waktu: 30-45 detik\n"
-        "Mohon tunggu..."
+        "🤖 Memproses survey dengan Selenium...\n"
+        "⏳ Mohon tunggu, proses ini membutuhkan waktu 1-2 menit..."
     )
     
     # Run survey automation
-    result, error = await bot.run_survey(customer_code, message, survey_url)
+    bot = StarbucksSurveyBot()
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, bot.run_complete_survey, customer_code
+    )
     
-    # Delete processing message
-    await processing_msg.delete()
-    
-    if result:
-        # Check if result is a promo code
-        if result != "SURVEY_COMPLETED" and len(result) >= 4:
-            await update.message.reply_text(
-                f"🎉 Survey berhasil diselesaikan!\n\n"
-                f"🎁 KODE PROMO ANDA: {result}\n\n"
-                f"📱 Tunjukkan kode ini di Starbucks untuk mendapatkan promo/diskon!\n\n"
-                f"Survey details:\n"
-                f"• Kode Pelanggan: {customer_code}\n"
-                f"• Semua rating: 7 (Sangat setuju)\n"
-                f"• Pesan: {message}\n\n"
-                f"Gunakan /start untuk mengisi survey lagi."
-            )
-        else:
-            await update.message.reply_text(
-                f"🎉 Survey berhasil diselesaikan!\n\n"
-                f"✅ Status: Survey Complete\n\n"
-                f"Survey Anda telah dikirim dengan:\n"
-                f"• Kode Pelanggan: {customer_code}\n"
-                f"• Semua rating: 7 (Sangat setuju)\n"
-                f"• Pesan: {message}\n\n"
-                f"Note: Promo code mungkin dikirim via email atau muncul di halaman akhir.\n\n"
-                f"Gunakan /start untuk mengisi survey lagi."
-            )
+    # Send result
+    if result['success']:
+        response_message = f"""
+✅ **Survey Berhasil Diselesaikan!**
+
+🎁 **Promo Code**: `{result['promo_code']}`
+
+Customer Code: `{customer_code}`
+Status: {result['message']}
+
+Terima kasih telah menggunakan bot survey automation!
+        """
     else:
-        await update.message.reply_text(
-            f"❌ Gagal menyelesaikan survey\n\n"
-            f"Error: {error}\n\n"
-            f"Tips:\n"
-            f"• Pastikan kode pelanggan benar\n"
-            f"• QR code mungkin sudah kadaluarsa (scan QR baru)\n"
-            f"• Coba lagi dalam beberapa menit\n\n"
-            f"Silakan coba lagi dengan /start"
-        )
+        response_message = f"""
+❌ **Survey Gagal**
+
+Customer Code: `{customer_code}`
+Error: {result['message']}
+
+Silakan coba lagi dengan customer code yang valid.
+        """
     
-    # Clear session
-    user_sessions.pop(user_id, None)
+    await processing_msg.edit_text(response_message, parse_mode='Markdown')
     return ConversationHandler.END
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel current operation"""
-    user_id = update.effective_user.id
-    user_sessions.pop(user_id, None)
-    
-    await update.message.reply_text(
-        "❌ Operasi dibatalkan. Gunakan /start untuk memulai lagi."
-    )
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel conversation"""
+    await update.message.reply_text("Operasi dibatalkan.")
     return ConversationHandler.END
 
 def main():
     """Main function to run the bot"""
-    # Get token from environment variable or use provided token
-    TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8481395468:AAEFat0skeQc9Z1ntaIECMQhpb-6T0-Lzdk')
+    # Get bot token from environment
+    BOT_TOKEN = os.getenv('BOT_TOKEN')
+    WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # For Render deployment
+    PORT = int(os.getenv('PORT', 8000))
+    
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable not set!")
+        return
     
     # Create application
-    application = Application.builder().token(TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).build()
     
-    # Add conversation handler
+    # Create conversation handler
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
+        entry_points=[CommandHandler("start", start)],
         states={
-            WAITING_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)],
-            WAITING_CODE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code),
-                CallbackQueryHandler(customer_code_callback)
-            ],
-            WAITING_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message)],
+            WAITING_CUSTOMER_CODE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_customer_code)
+            ]
         },
-        fallbacks=[CommandHandler('cancel', cancel)],
-        per_message=False
+        fallbacks=[CommandHandler("cancel", cancel)]
     )
     
+    # Add handlers
     application.add_handler(conv_handler)
     
     # Start bot
-    if os.environ.get('WEBHOOK_URL'):
-        # For deployment with webhook
-        port = int(os.environ.get('PORT', 5000))
-        webhook_url = os.environ.get('WEBHOOK_URL')
+    logger.info("Starting Starbucks Survey Selenium Bot...")
+    
+    if WEBHOOK_URL:
+        # Use webhook for deployment (Render)
+        logger.info(f"Starting webhook on port {PORT}")
         application.run_webhook(
             listen="0.0.0.0",
-            port=port,
-            url_path=TOKEN,
-            webhook_url=f"{webhook_url}/{TOKEN}"
+            port=PORT,
+            webhook_url=WEBHOOK_URL,
+            allowed_updates=Update.ALL_TYPES
         )
     else:
-        # For local development
-        application.run_polling()
+        # Use polling for local development
+        logger.info("Starting polling mode")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
