@@ -9,7 +9,6 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 import time
 import re
 from typing import Optional
@@ -49,13 +48,8 @@ class StarbucksSurveyBot:
         chrome_options.add_argument("--remote-debugging-port=9222")
         chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         
-        # Setup service with ChromeDriverManager but specify chrome binary
-        try:
-            service = Service(ChromeDriverManager(chrome_type=None).install())
-            service.path = ChromeDriverManager().install()
-        except:
-            # Fallback to system chromedriver if available
-            service = Service("/usr/local/bin/chromedriver")
+        # Use direct chromedriver path
+        service = Service("/usr/local/bin/chromedriver")
         
         self.driver = webdriver.Chrome(service=service, options=chrome_options)
         self.driver.implicitly_wait(10)

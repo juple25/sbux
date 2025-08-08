@@ -48,8 +48,21 @@ RUN apt-get update && apt-get install -y \
 
 # Download and install Chrome
 RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+    && apt-get update \
     && dpkg -i google-chrome-stable_current_amd64.deb || apt-get -fy install \
-    && rm google-chrome-stable_current_amd64.deb
+    && rm google-chrome-stable_current_amd64.deb \
+    && google-chrome --version
+
+# Download and install ChromeDriver
+RUN CHROME_VERSION=$(google-chrome --version | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1) \
+    && echo "Chrome version: $CHROME_VERSION" \
+    && CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION%.*}") \
+    && echo "ChromeDriver version: $CHROMEDRIVER_VERSION" \
+    && wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip" \
+    && unzip chromedriver_linux64.zip \
+    && mv chromedriver /usr/local/bin/ \
+    && chmod +x /usr/local/bin/chromedriver \
+    && rm chromedriver_linux64.zip
 
 # Set working directory
 WORKDIR /app
