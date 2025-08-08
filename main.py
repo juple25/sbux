@@ -56,8 +56,8 @@ class StarbucksSurveyBot:
     def access_survey_page(self, customer_code: str) -> bool:
         """Access Starbucks survey page and enter customer code"""
         try:
-            # Navigate to Starbucks survey page
-            survey_url = "https://customervoice.starbucks.co.id/"
+            # Navigate to Starbucks survey page  
+            survey_url = f"https://www.mystarbucksvisit.com/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2=691c9ac9-0e05-497b-956f-cb929187a36a#!/1"
             logger.info(f"Navigating to: {survey_url}")
             
             self.driver.get(survey_url)
