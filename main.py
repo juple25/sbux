@@ -32,6 +32,9 @@ class StarbucksSurveyBot:
         """Setup Chrome WebDriver with proper configuration"""
         chrome_options = Options()
         
+        # Set Chrome binary path explicitly
+        chrome_options.binary_location = "/usr/bin/google-chrome"
+        
         if headless:
             chrome_options.add_argument("--headless")
         
@@ -43,10 +46,16 @@ class StarbucksSurveyBot:
         chrome_options.add_argument("--disable-extensions")
         chrome_options.add_argument("--disable-plugins")
         chrome_options.add_argument("--disable-images")
+        chrome_options.add_argument("--remote-debugging-port=9222")
         chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         
-        # Setup service with ChromeDriverManager
-        service = Service(ChromeDriverManager().install())
+        # Setup service with ChromeDriverManager but specify chrome binary
+        try:
+            service = Service(ChromeDriverManager(chrome_type=None).install())
+            service.path = ChromeDriverManager().install()
+        except:
+            # Fallback to system chromedriver if available
+            service = Service("/usr/local/bin/chromedriver")
         
         self.driver = webdriver.Chrome(service=service, options=chrome_options)
         self.driver.implicitly_wait(10)
