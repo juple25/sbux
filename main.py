@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # States for conversation
-WAITING_SURVEY_URL, WAITING_CUSTOMER_CODE = range(2)
+WAITING_SURVEY_URL, WAITING_CUSTOMER_CODE, WAITING_SURVEY_MESSAGE = range(3)
 
 class StarbucksSurveyBot:
     def __init__(self):
@@ -126,14 +126,27 @@ class StarbucksSurveyBot:
             logger.error(f"Error selecting language: {str(e)}")
             return False
     
-    def fill_survey_questions(self) -> bool:
-        """Fill out all survey questions with positive responses"""
+    def generate_customer_code(self) -> str:
+        """Generate realistic customer code if needed"""
+        import random
+        import string
+        
+        # Generate format like: 16644 078108050916
+        part1 = ''.join([str(random.randint(0,9)) for _ in range(5)])
+        part2 = ''.join([str(random.randint(0,9)) for _ in range(12)])
+        
+        return f"{part1} {part2}"
+
+    def fill_survey_questions(self, custom_message: str = None) -> bool:
+        """Fill out all survey questions with positive responses and custom message"""
         try:
             # Select Indonesian language first
             self.select_language_indonesian()
             time.sleep(2)
             
-            # Find all radio buttons and select positive answers (usually highest value)
+            logger.info("🔍 Mencari semua pertanyaan survey...")
+            
+            # Find all radio buttons and select positive answers (value 7)
             radio_groups = {}
             radio_buttons = self.driver.find_elements(By.CSS_SELECTOR, "input[type='radio']")
             
@@ -146,53 +159,83 @@ class StarbucksSurveyBot:
                         radio_groups[name] = []
                     radio_groups[name].append((radio, value))
             
-            # Select highest value for each question (most positive response)
+            # Select value 7 (highest rating) for each question
+            question_count = 0
             for group_name, radios in radio_groups.items():
                 try:
-                    # Sort by value and select the highest (most positive)
-                    radios.sort(key=lambda x: int(x[1]) if x[1].isdigit() else 0, reverse=True)
-                    best_radio = radios[0][0]
+                    # Look for value 7 first, then highest available
+                    target_radio = None
                     
-                    if best_radio.is_enabled():
-                        self.driver.execute_script("arguments[0].click();", best_radio)
-                        logger.info(f"Selected positive answer for question group: {group_name}")
+                    # Try to find value 7 (Sangat Setuju)
+                    for radio, value in radios:
+                        if value == '7':
+                            target_radio = radio
+                            break
+                    
+                    # If no value 7, get highest value
+                    if not target_radio:
+                        radios.sort(key=lambda x: int(x[1]) if x[1].isdigit() else 0, reverse=True)
+                        target_radio = radios[0][0]
+                    
+                    if target_radio and target_radio.is_enabled():
+                        self.driver.execute_script("arguments[0].click();", target_radio)
+                        question_count += 1
+                        logger.info(f"✅ Pertanyaan {question_count}: Memilih nilai 7 (Sangat Setuju)")
+                        time.sleep(1)  # Small delay between selections
                         
                 except Exception as e:
                     logger.warning(f"Could not select radio for {group_name}: {str(e)}")
             
-            # Handle dropdown selects
+            # Handle dropdown selects with positive choices
             selects = self.driver.find_elements(By.CSS_SELECTOR, "select")
-            for select_element in selects:
+            for i, select_element in enumerate(selects):
                 try:
                     select = Select(select_element)
                     options = select.options[1:]  # Skip first option (usually empty)
                     
                     if options:
-                        # Select positive options
-                        for option in options:
-                            text = option.text.lower()
-                            if any(keyword in text for keyword in ['strongly agree', 'sangat setuju', 'buy and go', 'yes', 'ya']):
-                                select.select_by_visible_text(option.text)
-                                logger.info(f"Selected dropdown option: {option.text}")
+                        # Select positive options in priority order
+                        selected = False
+                        positive_keywords = [
+                            'buy and go', 'membeli dan langsung pergi',
+                            'yes', 'ya', 
+                            'strongly agree', 'sangat setuju',
+                            'excellent', 'sangat baik',
+                            'today', 'hari ini'
+                        ]
+                        
+                        for keyword in positive_keywords:
+                            for option in options:
+                                if keyword in option.text.lower():
+                                    select.select_by_visible_text(option.text)
+                                    logger.info(f"✅ Dropdown {i+1}: Memilih '{option.text}'")
+                                    selected = True
+                                    break
+                            if selected:
                                 break
-                        else:
-                            # Default to first available option
+                        
+                        # If no positive keyword found, select first available
+                        if not selected:
                             select.select_by_index(1)
+                            logger.info(f"✅ Dropdown {i+1}: Memilih opsi default")
                             
                 except Exception as e:
-                    logger.warning(f"Could not handle select element: {str(e)}")
+                    logger.warning(f"Could not handle select element {i}: {str(e)}")
             
-            # Fill text areas if any
-            text_areas = self.driver.find_elements(By.CSS_SELECTOR, "textarea")
-            for textarea in text_areas:
+            # Fill text areas with custom message
+            text_areas = self.driver.find_elements(By.CSS_SELECTOR, "textarea, input[type='text']:not([name*='code'])")
+            for i, textarea in enumerate(text_areas):
                 try:
-                    if not textarea.get_attribute('value'):
-                        textarea.send_keys("Excellent service and great coffee quality!")
-                        logger.info("Filled textarea with positive comment")
-                except:
-                    pass
+                    if not textarea.get_attribute('value') or len(textarea.get_attribute('value').strip()) == 0:
+                        message = custom_message if custom_message else "Pelayanan sangat memuaskan, barista ramah, minuman berkualitas tinggi. Terima kasih Starbucks!"
+                        textarea.clear()
+                        textarea.send_keys(message)
+                        logger.info(f"✅ Pesan feedback: '{message[:50]}...'")
+                except Exception as e:
+                    logger.warning(f"Could not fill textarea {i}: {str(e)}")
             
-            time.sleep(2)
+            logger.info(f"🎯 Survey berhasil diisi: {question_count} pertanyaan rating dengan nilai 7")
+            time.sleep(3)
             return True
             
         except Exception as e:
@@ -273,7 +316,7 @@ class StarbucksSurveyBot:
             logger.error(f"Error extracting promo code: {str(e)}")
             return None
     
-    def run_complete_survey(self, survey_url: str, customer_code: str) -> dict:
+    def run_complete_survey(self, survey_url: str, customer_code: str, custom_message: str = None) -> dict:
         """Run the complete survey automation process"""
         result = {
             'success': False,
@@ -290,8 +333,8 @@ class StarbucksSurveyBot:
                 result['message'] = "Failed to access survey page"
                 return result
             
-            # Fill survey questions
-            if not self.fill_survey_questions():
+            # Fill survey questions with custom message
+            if not self.fill_survey_questions(custom_message):
                 result['message'] = "Failed to fill survey questions"
                 return result
             
@@ -332,9 +375,17 @@ Untuk memulai survey automation, ikuti langkah berikut:
 1️⃣ Kirimkan **Survey URL** Anda
    Format: `https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...&_s2=...`
 
-2️⃣ Lalu kirimkan **Customer Code** dari receipt
+2️⃣ Kirimkan **Customer Code** dari receipt
+   (atau ketik "generate" untuk auto-generate)
 
-⚠️ **Disclaimer**: Bot ini menggunakan browser automation yang sesungguhnya untuk mengisi survey Starbucks. Gunakan dengan bijak dan sesuai dengan terms of service Starbucks.
+3️⃣ Kirimkan **Pesan Survey** untuk feedback
+   (pesan kustom yang akan diisi di textarea survey)
+
+⚠️ **Bot akan otomatis**:
+- ✅ Pilih semua rating dengan nilai **7** (Sangat Setuju)
+- ✅ Pilih jawaban positif untuk dropdown
+- ✅ Isi pesan kustom Anda di feedback
+- ✅ Extract kode promo voucher dari hasil
 
 Kirimkan Survey URL Anda sekarang:
     """
@@ -359,14 +410,15 @@ async def handle_survey_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "✅ **Survey URL berhasil disimpan!**\n\n"
-        "Sekarang kirimkan **Customer Code** dari receipt Starbucks Anda:",
+        "Sekarang kirimkan **Customer Code** dari receipt Starbucks Anda:\n"
+        "(atau ketik `generate` untuk auto-generate customer code)",
         parse_mode='Markdown'
     )
     return WAITING_CUSTOMER_CODE
 
 async def handle_customer_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle customer code input"""
-    customer_code = update.message.text.strip()
+    user_input = update.message.text.strip()
     survey_url = context.user_data.get('survey_url')
     
     if not survey_url:
@@ -375,25 +427,74 @@ async def handle_customer_code(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return ConversationHandler.END
     
-    if len(customer_code) < 10:
+    # Handle auto-generate
+    if user_input.lower() == 'generate':
+        bot = StarbucksSurveyBot()
+        customer_code = bot.generate_customer_code()
         await update.message.reply_text(
-            "❌ Customer code terlalu pendek. Pastikan Anda memasukkan code yang lengkap."
+            f"🎲 **Customer Code Auto-Generated:**\n"
+            f"`{customer_code}`\n\n"
+            f"✅ Customer code berhasil di-generate!",
+            parse_mode='Markdown'
         )
-        return WAITING_CUSTOMER_CODE
+    else:
+        customer_code = user_input
+        if len(customer_code) < 10:
+            await update.message.reply_text(
+                "❌ Customer code terlalu pendek. Pastikan Anda memasukkan code yang lengkap atau ketik 'generate'."
+            )
+            return WAITING_CUSTOMER_CODE
+    
+    # Store customer code in context
+    context.user_data['customer_code'] = customer_code
+    
+    await update.message.reply_text(
+        "✅ **Customer Code berhasil disimpan!**\n\n"
+        "Terakhir, kirimkan **Pesan Survey** untuk feedback:\n"
+        "(contoh: 'Pelayanan sangat baik, barista ramah, coffee berkualitas tinggi')",
+        parse_mode='Markdown'
+    )
+    return WAITING_SURVEY_MESSAGE
+
+async def handle_survey_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle survey message input and run automation"""
+    survey_message = update.message.text.strip()
+    survey_url = context.user_data.get('survey_url')
+    customer_code = context.user_data.get('customer_code')
+    
+    if not survey_url or not customer_code:
+        await update.message.reply_text(
+            "❌ Data tidak lengkap. Silakan mulai ulang dengan /start"
+        )
+        return ConversationHandler.END
+    
+    if len(survey_message) < 10:
+        await update.message.reply_text(
+            "❌ Pesan survey terlalu pendek. Berikan feedback yang lebih detail."
+        )
+        return WAITING_SURVEY_MESSAGE
     
     # Send processing message
     processing_msg = await update.message.reply_text(
-        "🤖 Memproses survey dengan Selenium...\n"
+        "🤖 **Memproses survey dengan Selenium...**\n"
         "⏳ Mohon tunggu, proses ini membutuhkan waktu 1-2 menit...\n\n"
         f"📋 Survey URL: `{survey_url[:50]}...`\n"
-        f"🎫 Customer Code: `{customer_code}`",
+        f"🎫 Customer Code: `{customer_code}`\n"
+        f"💬 Survey Message: `{survey_message[:30]}...`\n\n"
+        f"🎯 **Proses Automation:**\n"
+        f"- 🌐 Membuka browser Chrome headless\n"
+        f"- 🔗 Mengakses survey URL\n"
+        f"- 📝 Mengisi customer code\n"
+        f"- ✅ Pilih semua rating dengan **nilai 7**\n"
+        f"- 📋 Isi feedback dengan pesan kustom\n"
+        f"- 🎁 Extract kode promo voucher",
         parse_mode='Markdown'
     )
     
     # Run survey automation
     bot = StarbucksSurveyBot()
     result = await asyncio.get_event_loop().run_in_executor(
-        None, bot.run_complete_survey, survey_url, customer_code
+        None, bot.run_complete_survey, survey_url, customer_code, survey_message
     )
     
     # Send result
@@ -449,6 +550,9 @@ def main():
             ],
             WAITING_CUSTOMER_CODE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_customer_code)
+            ],
+            WAITING_SURVEY_MESSAGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_survey_message)
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel)]
