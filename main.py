@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # States for conversation
-WAITING_CUSTOMER_CODE = 1
+WAITING_SURVEY_URL, WAITING_CUSTOMER_CODE = range(2)
 
 class StarbucksSurveyBot:
     def __init__(self):
@@ -56,11 +56,9 @@ class StarbucksSurveyBot:
         
         return self.driver
     
-    def access_survey_page(self, customer_code: str) -> bool:
+    def access_survey_page(self, survey_url: str, customer_code: str) -> bool:
         """Access Starbucks survey page and enter customer code"""
         try:
-            # Navigate to Starbucks survey page  
-            survey_url = f"https://www.mystarbucksvisit.com/websurvey/2/execute?_g=NTAyMA%3D%3Dh&_s2=691c9ac9-0e05-497b-956f-cb929187a36a#!/1"
             logger.info(f"Navigating to: {survey_url}")
             
             self.driver.get(survey_url)
@@ -275,7 +273,7 @@ class StarbucksSurveyBot:
             logger.error(f"Error extracting promo code: {str(e)}")
             return None
     
-    def run_complete_survey(self, customer_code: str) -> dict:
+    def run_complete_survey(self, survey_url: str, customer_code: str) -> dict:
         """Run the complete survey automation process"""
         result = {
             'success': False,
@@ -288,7 +286,7 @@ class StarbucksSurveyBot:
             self.setup_driver(headless=True)
             
             # Access survey page
-            if not self.access_survey_page(customer_code):
+            if not self.access_survey_page(survey_url, customer_code):
                 result['message'] = "Failed to access survey page"
                 return result
             
@@ -329,19 +327,53 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = """
 🎯 **Starbucks Survey Automation Bot (Real Selenium Version)**
 
-Kirim customer code Anda untuk memulai survey otomatis.
+Untuk memulai survey automation, ikuti langkah berikut:
+
+1️⃣ Kirimkan **Survey URL** Anda
+   Format: `https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...&_s2=...`
+
+2️⃣ Lalu kirimkan **Customer Code** dari receipt
 
 ⚠️ **Disclaimer**: Bot ini menggunakan browser automation yang sesungguhnya untuk mengisi survey Starbucks. Gunakan dengan bijak dan sesuai dengan terms of service Starbucks.
 
-Kirimkan customer code Anda sekarang:
+Kirimkan Survey URL Anda sekarang:
     """
     
     await update.message.reply_text(welcome_message, parse_mode='Markdown')
+    return WAITING_SURVEY_URL
+
+async def handle_survey_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle survey URL input"""
+    survey_url = update.message.text.strip()
+    
+    if not survey_url.startswith('https://www.mystarbucksvisit.com'):
+        await update.message.reply_text(
+            "❌ URL tidak valid. Pastikan menggunakan URL yang dimulai dengan:\n"
+            "`https://www.mystarbucksvisit.com/websurvey/2/execute?_g=...`",
+            parse_mode='Markdown'
+        )
+        return WAITING_SURVEY_URL
+    
+    # Store survey URL in context
+    context.user_data['survey_url'] = survey_url
+    
+    await update.message.reply_text(
+        "✅ **Survey URL berhasil disimpan!**\n\n"
+        "Sekarang kirimkan **Customer Code** dari receipt Starbucks Anda:",
+        parse_mode='Markdown'
+    )
     return WAITING_CUSTOMER_CODE
 
 async def handle_customer_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle customer code input"""
     customer_code = update.message.text.strip()
+    survey_url = context.user_data.get('survey_url')
+    
+    if not survey_url:
+        await update.message.reply_text(
+            "❌ Survey URL tidak ditemukan. Silakan mulai ulang dengan /start"
+        )
+        return ConversationHandler.END
     
     if len(customer_code) < 10:
         await update.message.reply_text(
@@ -352,13 +384,16 @@ async def handle_customer_code(update: Update, context: ContextTypes.DEFAULT_TYP
     # Send processing message
     processing_msg = await update.message.reply_text(
         "🤖 Memproses survey dengan Selenium...\n"
-        "⏳ Mohon tunggu, proses ini membutuhkan waktu 1-2 menit..."
+        "⏳ Mohon tunggu, proses ini membutuhkan waktu 1-2 menit...\n\n"
+        f"📋 Survey URL: `{survey_url[:50]}...`\n"
+        f"🎫 Customer Code: `{customer_code}`",
+        parse_mode='Markdown'
     )
     
     # Run survey automation
     bot = StarbucksSurveyBot()
     result = await asyncio.get_event_loop().run_in_executor(
-        None, bot.run_complete_survey, customer_code
+        None, bot.run_complete_survey, survey_url, customer_code
     )
     
     # Send result
@@ -409,6 +444,9 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
+            WAITING_SURVEY_URL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_survey_url)
+            ],
             WAITING_CUSTOMER_CODE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_customer_code)
             ]
