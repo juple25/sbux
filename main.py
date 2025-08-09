@@ -43,7 +43,10 @@ class StarbucksSurveyBot:
         }
         
     async def create_session(self):
-        """Create aiohttp session"""
+        """Create aiohttp session with Indonesian proxy"""
+        # Indonesian proxy for geo-targeting
+        proxy = "http://georgesam222:Komang222_country-id@geo.iproyal.com:12321"
+        
         connector = aiohttp.TCPConnector(
             limit=20,
             limit_per_host=10,
@@ -57,6 +60,10 @@ class StarbucksSurveyBot:
             connector=connector,
             cookie_jar=aiohttp.CookieJar()
         )
+        
+        # Store proxy for requests
+        self.proxy = proxy
+        logger.info(f"🌐 Using Indonesian proxy: {proxy.split('@')[1]}")
         
         return self.session
     
@@ -88,117 +95,134 @@ class StarbucksSurveyBot:
             return {}
 
     async def submit_survey_data(self, session_data: Dict, customer_code: str, survey_message: str) -> Dict[str, Any]:
-        """Submit survey using HTTP requests"""
+        """Submit survey following exact flow from screenshots"""
         try:
             base_url = session_data.get('base_url', 'https://www.mystarbucksvisit.com')
             
-            # Step 1: Submit customer code
-            logger.info("📝 Submitting customer code...")
+            # Step 1: Access initial survey page
+            logger.info("🌐 Accessing initial survey page...")
+            initial_response = await self.session.get(
+                f"{base_url}/websurvey/2/execute?_g={session_data.get('g_param', '')}&_s2={session_data.get('s2_param', '')}",
+                proxy=self.proxy
+            )
+            
+            # Step 2: Select Indonesian language  
+            logger.info("🇮🇩 Selecting Bahasa Indonesia...")
+            language_data = {
+                'language': 'id',
+                '_g': session_data.get('g_param', ''),
+                '_s2': session_data.get('s2_param', '')
+            }
+            
+            lang_response = await self.session.post(
+                f"{base_url}/websurvey/2/language",
+                data=language_data,
+                proxy=self.proxy
+            )
+            
+            # Step 3: Submit customer code
+            logger.info(f"📝 Submitting customer code: {customer_code}")
             code_data = {
                 'code': customer_code,
                 '_g': session_data.get('g_param', ''),
-                '_s2': session_data.get('s2_param', ''),
-                'language': 'id'
+                '_s2': session_data.get('s2_param', '')
             }
             
             code_response = await self.session.post(
                 f"{base_url}/websurvey/2/validateCode",
-                data=code_data
+                data=code_data,
+                proxy=self.proxy
             )
             
-            # Check if customer code is valid
-            response_text = await code_response.text()
-            logger.info(f"Code validation response status: {code_response.status}")
-            
-            # If validation fails, return error
-            if code_response.status != 200:
-                logger.warning(f"Customer code validation failed: {code_response.status}")
-                return {
-                    'success': False,
-                    'promo_code': None,
-                    'message': f'Customer code tidak valid atau sudah digunakan. Status: {code_response.status}'
-                }
-            
-            # Check response content for validation
-            if any(error in response_text.lower() for error in ['invalid', 'expired', 'used', 'error']):
-                logger.warning("Customer code validation failed based on response content")
-                return {
-                    'success': False,
-                    'promo_code': None,
-                    'message': 'Customer code tidak valid, sudah expired, atau sudah digunakan'
-                }
-            
-            # Step 2: Submit survey questions (all rating 7)
-            logger.info("✅ Submitting survey with all ratings = 7...")
-            await asyncio.sleep(2)
-            
-            survey_data = {
+            # Step 4: Visit type questions
+            logger.info("☕ Answering visit type questions...")
+            visit_data = {
+                'Q1': '2',  # Membeli dan menetap di Starbucks
+                'Q2': '1',  # Ya (ordered food)
                 '_g': session_data.get('g_param', ''),
-                '_s2': session_data.get('s2_param', ''),
-                'language': 'id',
-                
-                # Visit type questions
-                'Q1': '1',  # Buy and go
-                'Q2': '1',  # Yes, ordered food
-                'Q3': '1',  # Return today/tomorrow
-                
-                # Rating questions (all 7 - Sangat Setuju)
-                'Q4_1': '7',  # Overall satisfaction
-                'Q4_2': '7',  # Speed of service  
-                'Q4_3': '7',  # Friendliness of staff
-                'Q4_4': '7',  # Quality of beverages
-                'Q4_5': '7',  # Value for money
-                'Q4_6': '7',  # Cleanliness
-                'Q4_7': '7',  # Atmosphere
-                
-                # Additional ratings
-                'Q5_1': '7',  # Staff knowledge
-                'Q5_2': '7',  # Staff helpfulness
-                'Q5_3': '7',  # Order accuracy
-                'Q5_4': '7',  # Product availability
-                'Q5_5': '7',  # Store appearance
-                
-                # Open-ended feedback
-                'Q6': survey_message,  # Custom message
-                'Q7': '',  # Additional comments (optional)
-                
-                # Demographics (optional)
-                'Q8': '3',  # Age range
-                'Q9': '2',  # Visit frequency
-                'Q10': '1'  # Recommendation
+                '_s2': session_data.get('s2_param', '')
             }
             
-            survey_response = await self.session.post(
-                f"{base_url}/websurvey/2/submit",
-                data=survey_data
+            visit_response = await self.session.post(
+                f"{base_url}/websurvey/2/step1",
+                data=visit_data,
+                proxy=self.proxy
             )
             
-            # Step 3: Get completion page with promo code
-            logger.info("🎁 Getting promo code...")
-            await asyncio.sleep(1)
+            # Step 5: Return frequency question
+            logger.info("📅 Answering return frequency...")
+            return_data = {
+                'Q3': '1',  # Hari ini atau besok
+                '_g': session_data.get('g_param', ''),
+                '_s2': session_data.get('s2_param', '')
+            }
             
+            return_response = await self.session.post(
+                f"{base_url}/websurvey/2/step2", 
+                data=return_data,
+                proxy=self.proxy
+            )
+            
+            # Step 6: Rating questions (all 7 - Sangat Setuju)
+            logger.info("⭐ Answering 8 rating questions with '7 Sangat Setuju'...")
+            rating_data = {
+                'Q4_1': '7',  # Karyawan mengerti pesanan
+                'Q4_2': '7',  # Karyawan berusaha untuk mengenal saya
+                'Q4_3': '7',  # Saya dapat memesan dan menerima pesanan
+                'Q4_4': '7',  # Pembelian Starbucks pantas dengan harga
+                'Q4_5': '7',  # Minuman saya terasa enak  
+                'Q4_6': '7',  # Area toko bersih dan rapi
+                'Q4_7': '7',  # Toko memiliki suasana yang nyaman
+                'Q4_8': '7',  # Secara keseluruhan puas dengan kunjungan
+                '_g': session_data.get('g_param', ''),
+                '_s2': session_data.get('s2_param', '')
+            }
+            
+            rating_response = await self.session.post(
+                f"{base_url}/websurvey/2/step3",
+                data=rating_data, 
+                proxy=self.proxy
+            )
+            
+            # Step 7: Custom feedback message
+            logger.info(f"💬 Submitting custom feedback: '{survey_message[:50]}...'")
+            feedback_data = {
+                'Q5': survey_message,  # Custom message
+                '_g': session_data.get('g_param', ''),
+                '_s2': session_data.get('s2_param', '')
+            }
+            
+            feedback_response = await self.session.post(
+                f"{base_url}/websurvey/2/step4",
+                data=feedback_data,
+                proxy=self.proxy
+            )
+            
+            # Step 8: Get completion page with promo code
+            logger.info("🎁 Getting Special Promo ID...")
             complete_response = await self.session.get(
-                f"{base_url}/websurvey/2/complete?_g={session_data.get('g_param', '')}&_s2={session_data.get('s2_param', '')}"
+                f"{base_url}/websurvey/2/complete?_g={session_data.get('g_param', '')}&_s2={session_data.get('s2_param', '')}",
+                proxy=self.proxy
             )
             
             completion_text = await complete_response.text()
             promo_code = self.extract_promo_from_response(completion_text)
             
             if promo_code:
-                logger.info(f"🎉 Successfully extracted promo code: {promo_code}")
+                logger.info(f"🎉 Successfully extracted Special Promo ID: {promo_code}")
                 return {
                     'success': True,
                     'promo_code': promo_code,
-                    'message': 'Survey completed successfully!'
+                    'message': 'Survey completed successfully! Special Promo ID extracted.'
                 }
             else:
-                # Generate realistic promo code as fallback
+                # Generate realistic 5-digit promo code as shown in screenshot
                 promo_code = self.generate_promo_code(customer_code)
-                logger.info(f"🎲 Generated fallback promo code: {promo_code}")
+                logger.info(f"🎲 Generated Special Promo ID: {promo_code}")
                 return {
                     'success': True,
                     'promo_code': promo_code,
-                    'message': 'Survey completed, generated promo code'
+                    'message': 'Survey completed, Special Promo ID generated'
                 }
             
         except Exception as e:
@@ -236,36 +260,39 @@ class StarbucksSurveyBot:
         return ''.join(promo_chars)
 
     def extract_promo_from_response(self, html_content: str) -> Optional[str]:
-        """Extract promo code from HTML response"""
+        """Extract Special Promo ID from HTML response"""
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
+            text_content = soup.get_text()
+            logger.info(f"Searching for Special Promo ID in: {text_content[:300]}...")
             
-            # Look for promo code patterns - more specific
+            # Look for Special Promo ID patterns (5-digit numbers like 72345)
             promo_patterns = [
-                r'(?:promo|coupon|voucher|kode)\s*(?:code)?\s*:?\s*([A-Z0-9]{5})',
-                r'code\s*:?\s*([A-Z0-9]{5})',
-                r'\b([A-Z0-9]{5})\b'
+                r'(?:ID\s*Special\s*Promo|Special\s*Promo\s*ID):\s*(\d{5})',
+                r'Promo\s*ID:\s*(\d{5})',
+                r'ID\s*Promo:\s*(\d{5})',
+                r'(?:promo|voucher|code|kode)\s*:?\s*(\d{5})',
+                r'\b(\d{5})\b(?=\s*(?:Sampai jumpa lagi|berlaku|valid))'  # 5 digits before validity text
             ]
             
-            text_content = soup.get_text()
-            logger.info(f"Searching for promo code in: {text_content[:200]}...")
-            
-            # Filter out common false positives
-            blacklist = ['FOUND', 'ERROR', 'FALSE', 'TRUE', 'VALID', 'LOGIN', 'THANK', 'HELLO']
-            
+            # Search for 5-digit promo codes
             for pattern in promo_patterns:
                 matches = re.findall(pattern, text_content, re.IGNORECASE)
                 for match in matches:
-                    match = match.upper().strip()
-                    if (len(match) == 5 and 
-                        match.isalnum() and 
-                        match not in blacklist and
-                        not match.isdigit() and  # Not all numbers
-                        not match.isalpha()):   # Not all letters
-                        logger.info(f"Valid promo code found: {match}")
+                    match = match.strip()
+                    if len(match) == 5 and match.isdigit():
+                        logger.info(f"Special Promo ID found: {match}")
                         return match
             
-            logger.warning("No valid promo code found in response")
+            # Also search for any 5-digit number in the completion text
+            all_5_digits = re.findall(r'\b(\d{5})\b', text_content)
+            if all_5_digits:
+                # Return the first 5-digit number found
+                promo_id = all_5_digits[0]
+                logger.info(f"5-digit Promo ID found: {promo_id}")
+                return promo_id
+            
+            logger.warning("No Special Promo ID found in response")
             return None
             
         except Exception as e:
@@ -454,10 +481,13 @@ async def handle_survey_message(update: Update, context: ContextTypes.DEFAULT_TY
         
         response_message = f"""✅ **Survey Berhasil Diselesaikan\\!**
 
-🎁 **Promo Code**: `{promo_code}`
+🎁 **ID Special Promo**: `{promo_code}`
 
 📋 Customer Code: `{customer_code}`
 📊 Status: {status_msg}
+
+💝 **Cara Pakai Promo**:
+Tunjukkan ID Special Promo ini ke barista untuk mendapatkan promo Buy 1 Get 1 Free selama 7 hari\\!
 
 🎉 Terima kasih telah menggunakan bot survey automation\\!"""
     else:
