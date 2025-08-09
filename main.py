@@ -32,7 +32,7 @@ class StarbucksSurveyBot:
         chrome_options = Options()
         
         # Set Chrome binary path explicitly
-        chrome_options.binary_location = "/usr/bin/google-chrome"
+        chrome_options.binary_location = os.getenv('CHROME_BIN', '/usr/bin/google-chrome')
         
         if headless:
             chrome_options.add_argument("--headless")
@@ -48,8 +48,10 @@ class StarbucksSurveyBot:
         chrome_options.add_argument("--remote-debugging-port=9222")
         chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         
-        # Use direct chromedriver path
-        service = Service("/usr/local/bin/chromedriver")
+        # Use direct chromedriver path from environment
+        chromedriver_path = os.getenv('CHROMEDRIVER_PATH', '/usr/local/bin/chromedriver')
+        logger.info(f"Using ChromeDriver at: {chromedriver_path}")
+        service = Service(chromedriver_path)
         
         self.driver = webdriver.Chrome(service=service, options=chrome_options)
         self.driver.implicitly_wait(10)
