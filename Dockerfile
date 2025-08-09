@@ -53,16 +53,34 @@ RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd6
     && rm google-chrome-stable_current_amd64.deb \
     && google-chrome --version
 
-# Download and install ChromeDriver
+# Download and install ChromeDriver with fallback
 RUN CHROME_VERSION=$(google-chrome --version | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1) \
     && echo "Chrome version: $CHROME_VERSION" \
-    && CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION%.*}") \
-    && echo "ChromeDriver version: $CHROMEDRIVER_VERSION" \
-    && wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip" \
-    && unzip chromedriver_linux64.zip \
-    && mv chromedriver /usr/local/bin/ \
+    && CHROME_MAJOR=$(echo $CHROME_VERSION | cut -d. -f1) \
+    && echo "Chrome major version: $CHROME_MAJOR" \
+    && if [ "$CHROME_MAJOR" -ge "115" ]; then \
+        # For Chrome 115+, use new ChromeDriver API
+        CHROMEDRIVER_URL="https://googlechromelabs.github.io/chrome-for-testing/latest-versions-per-milestone.json"; \
+        CHROMEDRIVER_VERSION=$(curl -s $CHROMEDRIVER_URL | grep -o "\"$CHROME_MAJOR\":{\"version\":\"[^\"]*" | cut -d'"' -f4); \
+        if [ -z "$CHROMEDRIVER_VERSION" ]; then \
+            CHROMEDRIVER_VERSION="120.0.6099.109"; \
+        fi; \
+        echo "Using ChromeDriver version: $CHROMEDRIVER_VERSION"; \
+        wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROMEDRIVER_VERSION}/linux64/chromedriver-linux64.zip" \
+        && unzip chromedriver-linux64.zip \
+        && mv chromedriver-linux64/chromedriver /usr/local/bin/ \
+        && rm -rf chromedriver-linux64.zip chromedriver-linux64; \
+    else \
+        # For Chrome < 115, use legacy API
+        CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_MAJOR}"); \
+        echo "Using legacy ChromeDriver version: $CHROMEDRIVER_VERSION"; \
+        wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip" \
+        && unzip chromedriver_linux64.zip \
+        && mv chromedriver /usr/local/bin/ \
+        && rm chromedriver_linux64.zip; \
+    fi \
     && chmod +x /usr/local/bin/chromedriver \
-    && rm chromedriver_linux64.zip
+    && chromedriver --version
 
 # Set working directory
 WORKDIR /app

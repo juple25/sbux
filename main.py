@@ -497,29 +497,45 @@ async def handle_survey_message(update: Update, context: ContextTypes.DEFAULT_TY
         None, bot.run_complete_survey, survey_url, customer_code, survey_message
     )
     
-    # Send result
-    if result['success']:
-        response_message = f"""
-✅ **Survey Berhasil Diselesaikan!**
-
-🎁 **Promo Code**: `{result['promo_code']}`
-
-Customer Code: `{customer_code}`
-Status: {result['message']}
-
-Terima kasih telah menggunakan bot survey automation!
-        """
-    else:
-        response_message = f"""
-❌ **Survey Gagal**
-
-Customer Code: `{customer_code}`
-Error: {result['message']}
-
-Silakan coba lagi dengan customer code yang valid.
-        """
+    # Send result (escape special characters for Markdown)
+    def escape_markdown(text):
+        """Escape special Markdown characters"""
+        if not text:
+            return ""
+        # Escape common problematic characters
+        escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        for char in escape_chars:
+            text = text.replace(char, f'\\{char}')
+        return text
     
-    await processing_msg.edit_text(response_message, parse_mode='Markdown')
+    if result['success']:
+        promo_code = result.get('promo_code', 'N/A')
+        status_msg = escape_markdown(str(result.get('message', 'Success')))
+        
+        response_message = f"""✅ **Survey Berhasil Diselesaikan\\!**
+
+🎁 **Promo Code**: `{promo_code}`
+
+📋 Customer Code: `{customer_code}`
+📊 Status: {status_msg}
+
+🎉 Terima kasih telah menggunakan bot survey automation\\!"""
+    else:
+        error_msg = escape_markdown(str(result.get('message', 'Unknown error')))
+        
+        response_message = f"""❌ **Survey Gagal**
+
+📋 Customer Code: `{customer_code}`
+⚠️ Error: {error_msg}
+
+🔄 Silakan coba lagi dengan data yang valid\\."""
+    
+    try:
+        await processing_msg.edit_text(response_message, parse_mode='MarkdownV2')
+    except Exception as e:
+        # Fallback without markdown if parsing fails
+        plain_message = response_message.replace('*', '').replace('`', '').replace('\\', '')
+        await processing_msg.edit_text(plain_message)
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
