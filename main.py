@@ -106,6 +106,28 @@ class StarbucksSurveyBot:
                 data=code_data
             )
             
+            # Check if customer code is valid
+            response_text = await code_response.text()
+            logger.info(f"Code validation response status: {code_response.status}")
+            
+            # If validation fails, return error
+            if code_response.status != 200:
+                logger.warning(f"Customer code validation failed: {code_response.status}")
+                return {
+                    'success': False,
+                    'promo_code': None,
+                    'message': f'Customer code tidak valid atau sudah digunakan. Status: {code_response.status}'
+                }
+            
+            # Check response content for validation
+            if any(error in response_text.lower() for error in ['invalid', 'expired', 'used', 'error']):
+                logger.warning("Customer code validation failed based on response content")
+                return {
+                    'success': False,
+                    'promo_code': None,
+                    'message': 'Customer code tidak valid, sudah expired, atau sudah digunakan'
+                }
+            
             # Step 2: Submit survey questions (all rating 7)
             logger.info("✅ Submitting survey with all ratings = 7...")
             await asyncio.sleep(2)
@@ -218,21 +240,32 @@ class StarbucksSurveyBot:
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Look for promo code patterns
+            # Look for promo code patterns - more specific
             promo_patterns = [
-                r'(?:promo|coupon|voucher|kode)[\s:]*([A-Z0-9]{5})',
-                r'([A-Z0-9]{5})',
-                r'(?:code|kode)[\s:]*([A-Z0-9]{4,6})'
+                r'(?:promo|coupon|voucher|kode)\s*(?:code)?\s*:?\s*([A-Z0-9]{5})',
+                r'code\s*:?\s*([A-Z0-9]{5})',
+                r'\b([A-Z0-9]{5})\b'
             ]
             
             text_content = soup.get_text()
+            logger.info(f"Searching for promo code in: {text_content[:200]}...")
+            
+            # Filter out common false positives
+            blacklist = ['FOUND', 'ERROR', 'FALSE', 'TRUE', 'VALID', 'LOGIN', 'THANK', 'HELLO']
             
             for pattern in promo_patterns:
                 matches = re.findall(pattern, text_content, re.IGNORECASE)
                 for match in matches:
-                    if len(match) == 5 and match.isalnum():
-                        return match.upper()
+                    match = match.upper().strip()
+                    if (len(match) == 5 and 
+                        match.isalnum() and 
+                        match not in blacklist and
+                        not match.isdigit() and  # Not all numbers
+                        not match.isalpha()):   # Not all letters
+                        logger.info(f"Valid promo code found: {match}")
+                        return match
             
+            logger.warning("No valid promo code found in response")
             return None
             
         except Exception as e:
